@@ -1,7 +1,9 @@
 services:
   nas-media-downloader:
-    build: .
-    image: nas-media-downloader:latest
+    # 方式一（默认）：直接拉 GitHub 自动构建的镜像，NAS 上不需要源码
+    image: ghcr.io/lzp1314/nas-media-downloader:latest
+    # 方式二：本地有源码时自己构建 —— 注释掉上面 image 行，启用下面这行
+    # build: .
     container_name: nas-media-downloader
     restart: unless-stopped
     ports:

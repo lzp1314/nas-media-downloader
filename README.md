@@ -71,12 +71,28 @@ cp config/sites.example.json config/sites.json
 ### 4. 启动
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+默认直接拉取 GitHub 自动构建的镜像（`ghcr.io/lzp1314/nas-media-downloader:latest`，x86 / ARM 双架构），NAS 上不需要装 Node、不需要源码。
+
+想自己从源码构建：把 `docker-compose.yml` 里的 `image:` 行注释掉、取消 `build: .` 的注释，再执行 `docker compose up -d --build`。
 
 打开 `http://NAS的IP:9696`。
 
 群晖 / 飞牛也可以走图形界面：Docker → Compose → 新建项目 → 选择这个目录的 `docker-compose.yml`。
+
+### 更新
+
+```bash
+# 方式一：拉新镜像（推荐，几秒钟）
+docker compose pull && docker compose up -d
+
+# 方式二：SSH 里更新源码并本地构建
+git pull && docker compose up -d --build
+```
+
+每次推送到 GitHub 的 `main` 分支，Actions 会自动构建并发布新镜像；配置和数据都在 `config/` 与媒体目录的卷里，更新不丢。
 
 ## 端口
 
@@ -126,6 +142,7 @@ docker compose up -d --build
 
 ```
 nas-media-downloader/
+├─ .github/workflows/          推送后自动构建镜像发布到 ghcr.io
 ├─ Dockerfile / docker-compose.yml
 ├─ config/
 │  ├─ sites.example.json      片源配置示例（提交）

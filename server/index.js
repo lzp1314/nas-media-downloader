@@ -20,6 +20,27 @@ const publicDir = path.join(__dirname, '..', 'public');
 const PORT = Number(process.env.PORT || 8080);
 const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || '';
 const AUTH_COOKIE = 'nz_token';
+const UPDATE_REPO = process.env.UPDATE_REPO || 'lzp1314/nas-media-downloader';
+const VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    return String(process.env.APP_VERSION || pkg.version || '1.0.0');
+  } catch {
+    return String(process.env.APP_VERSION || '1.0.0');
+  }
+})();
+let updateCache = { at: 0, data: null };
+
+/** 版本号比较：只比数字段，够用且不引入依赖 */
+function newerVersion(a, b) {
+  const pa = String(a).split('.').map((n) => Number(n) || 0);
+  const pb = String(b).split('.').map((n) => Number(n) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    if ((pb[i] || 0) > (pa[i] || 0)) return true;
+    if ((pb[i] || 0) < (pa[i] || 0)) return false;
+  }
+  return false;
+}
 
 /* ------------------------------------------------------------------ */
 /* 极简路由                                                            */
@@ -132,7 +153,70 @@ on('GET', '/api/meta', async (req, res) => {
       b: Boolean(sites.b.configured),
       m: Boolean(sourceStatus().configured),
     },
+    version: VERSION,
   });
+});
+
+on('GET', '/api/version', async (req, res) => {
+  sendJson(res, 200, { version: VERSION, repo: UPDATE_REPO });
+});
+
+/** 检测更新：对比仓库里 package.json 的版本号；多个镜像源兜底，每个请求独立超时 */
+async function fetchJsonWithTimeout(url, ms = 7000, headers = {}) {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(ms),
+    headers: { 'User-Agent': 'nas-media-downloader', ...headers },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+on('GET', '/api/update/check', async (req, res) => {
+  const fresh = updateCache.data && Date.now() - updateCache.at < 10 * 60 * 1000;
+  if (fresh && !/force=1/.test(String(req.url || ''))) return sendJson(res, 200, updateCache.data);
+  const out = {
+    ok: false,
+    current: VERSION,
+    latest: VERSION,
+    hasUpdate: false,
+    repo: UPDATE_REPO,
+    releaseUrl: `https://github.com/${UPDATE_REPO}/commits/main`,
+    checkedAt: new Date().toISOString(),
+  };
+  // 依次尝试多个可读到 package.json 的入口，任一成功即可
+  const candidates = [
+    { url: `https://raw.githubusercontent.com/${UPDATE_REPO}/main/package.json`, headers: {} },
+    { url: `https://cdn.jsdelivr.net/gh/${UPDATE_REPO}@main/package.json`, headers: {} },
+    { url: `https://api.github.com/repos/${UPDATE_REPO}/contents/package.json?ref=main`, headers: { Accept: 'application/vnd.github+json' }, github: true },
+  ];
+  for (const c of candidates) {
+    try {
+      const j = await fetchJsonWithTimeout(c.url, 7000, c.headers);
+      if (c.github && j?.content) {
+        const txt = Buffer.from(String(j.content).replace(/\s/g, ''), 'base64').toString('utf8');
+        out.latest = String(JSON.parse(txt).version || VERSION);
+      } else {
+        out.latest = String(j?.version || VERSION);
+      }
+      out.ok = true;
+      out.hasUpdate = newerVersion(VERSION, out.latest);
+      out.via = new URL(c.url).host;
+      break;
+    } catch { /* 换下一个源 */ }
+  }
+  // 提交信息只做补充，失败不影响版本判断
+  try {
+    const c = await fetchJsonWithTimeout(`https://api.github.com/repos/${UPDATE_REPO}/commits/main`, 6000, { Accept: 'application/vnd.github+json' });
+    out.latestSha = String(c.sha || '').slice(0, 7);
+    out.latestNote = String(c.commit?.message || '').split(/\r?\n/)[0].slice(0, 100);
+    out.latestDate = c.commit?.committer?.date || '';
+  } catch { /* 忽略 */ }
+  if (!out.ok) {
+    out.error = '暂时连不上仓库，无法检查更新';
+    out.hint = '可点「查看仓库」手动比对，或稍后重试（容器需要能访问 GitHub）';
+  }
+  updateCache = { at: Date.now(), data: out };
+  sendJson(res, 200, out);
 });
 
 /** 界面里不出现站点名，统一用「源 A / 源 B」标识 */
@@ -174,18 +258,24 @@ on('POST', '/api/search', async (req, res) => {
     if (!sites.b.configured) {
       notes.push('资源库 B 未接入：在 config/sites.json 填好片源地址后可用');
     } else {
+      // 站内实时搜索 + 本地片库索引并用：
+      // 实时搜索覆盖全站（中文关键词也有效），索引在站点抖动时兜底。
       const local = searchIndex(kw, 60);
-      if (local.length) {
-        for (const it of local) raw.push({ source: 'b', item: it });
-      } else if (/^[\x20-\x7e]+$/.test(kw)) {
-        await bSearch(kw)
-          .then((r) => {
-            for (const it of r.items) raw.push({ source: 'b', item: it });
-          })
-          .catch((err) => notes.push(`资源库 B：${cleanMsg(err.message)}`));
-      } else {
-        notes.push('资源库 B 还没收录这部片，可在设置里同步片库');
+      let live = [];
+      try {
+        const r = await bSearch(kw);
+        live = Array.isArray(r.items) ? r.items : [];
+      } catch {
+        // 实时搜索失败时静默降级到索引，只要还能出结果就不打扰用户
       }
+      const merged = new Map();
+      for (const it of [...live, ...local]) {
+        const key = String(it.id || it.link || it.title);
+        if (!key || merged.has(key)) continue;
+        merged.set(key, it);
+      }
+      for (const it of merged.values()) raw.push({ source: 'b', item: it });
+      if (!merged.size) notes.push('资源库 B 暂时没找到这部片，可换个片名或在设置里同步片库');
     }
   }
 
@@ -413,8 +503,9 @@ on('POST', '/api/magnet/sources', async (req, res) => {
   const list = Array.isArray(sources) ? sources.slice(0, 30) : [];
   for (const s of list) {
     const url = String(s?.url || '').trim();
-    if (!/^https?:\/\//i.test(url) || !url.includes('{kw}')) {
-      return sendJson(res, 400, { error: `「${String(s?.name || '未命名')}」的搜索地址不合法，需要 http(s) 且包含 {kw}` });
+    const body = String(s?.postBody || '').trim();
+    if (!/^https?:\/\//i.test(url) || (!url.includes('{kw') && !body.includes('{kw'))) {
+      return sendJson(res, 400, { error: `「${String(s?.name || '未命名')}」的搜索地址不合法：需要 http(s) 开头，且地址或 POST 表单里带 {kw}` });
     }
   }
   sendJson(res, 200, { ok: true, sources: saveSources(list) });

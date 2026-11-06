@@ -486,6 +486,74 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 #magnetList .row-line .p { flex: 1 1 200px; white-space: normal; }
 #magnetList .row-line .p small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------------- 顶栏版本号 ---------------- */
+.ver {
+  flex: 0 0 auto; order: 1;
+  background: rgba(91, 140, 255, .10); border: 1px solid rgba(91, 140, 255, .22);
+  color: #a9c2ff; border-radius: 999px; padding: 3px 9px;
+  font-size: 13px; font-weight: 600; letter-spacing: .2px; cursor: pointer;
+  transition: all .18s ease;
+}
+.ver:hover { background: rgba(91, 140, 255, .20); }
+.ver.has { background: rgba(34, 211, 166, .14); border-color: rgba(34, 211, 166, .34); color: #7fe3c4; }
+.ver-dialog .ver-now { font-size: 16px; color: var(--muted); margin: 2px 0 12px; }
+.ver-dialog .ver-now b { color: var(--text); }
+.ver-dialog .status { margin-bottom: 12px; line-height: 1.7; }
+.ver-cmd {
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 14px;
+}
+.ver-cmd small { display: block; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.ver-cmd code { display: block; color: #a9c2ff; font-size: 14px; word-break: break-all; }
+
+/* ---------------- 设置页：板块选择列表 ---------------- */
+.settings-layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 18px; align-items: start; }
+.settings-nav {
+  display: flex; flex-direction: column; gap: 8px;
+  position: sticky; top: 82px;
+}
+.snav {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  width: 100%; padding: 12px 13px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; color: var(--text);
+  transition: border-color .18s ease, background .18s ease;
+}
+.snav:hover { border-color: var(--line-2); background: var(--surface-2); }
+.snav.on { border-color: rgba(91, 140, 255, .48); background: rgba(91, 140, 255, .10); }
+.snav .sn-ico {
+  flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px;
+  display: grid; place-items: center; font-size: 18px;
+  background: var(--surface-3); color: var(--muted);
+}
+.snav.on .sn-ico { background: rgba(91, 140, 255, .20); color: #a9c2ff; }
+.snav .sn-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.snav .sn-txt b { font-size: 16px; font-weight: 600; }
+.snav .sn-txt small { font-size: 13px; color: var(--dim); line-height: 1.4; }
+.settings-panels { min-width: 0; }
+.spanel { display: none; }
+.spanel.on { display: block; animation: panelIn .18s ease; }
+@keyframes panelIn { from { opacity: 0; transform: translateY(5px); } }
+
+/* ---------------- 磁搜探测诊断 ---------------- */
+.probe {
+  margin-top: 10px; padding: 11px 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; font-size: 14px;
+}
+.probe-head { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.probe-sample { color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+.probe-steps { display: flex; flex-direction: column; gap: 3px; max-height: 210px; overflow-y: auto; }
+.probe-step {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 4px 6px; border-radius: 6px; color: var(--dim);
+}
+.probe-step:nth-child(odd) { background: rgba(255, 255, 255, .02); }
+.probe-step.hit { color: #7fe3c4; background: rgba(34, 211, 166, .08); }
+.probe-step span:first-child { flex: 0 0 auto; }
+.probe-step span:last-child { text-align: right; word-break: break-all; }
+.probe-hint { margin-top: 8px; color: var(--muted); line-height: 1.6; }
+
 /* ---------------- 移动端 ---------------- */
 @media (max-width: 760px) {
   .bar { flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
@@ -509,4 +577,24 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   .field label { flex: 0 0 100%; }
   .field input, .field select { flex: 1 1 100%; min-width: 0; }
   .dialog { padding: 16px 14px; }
+  /* 设置板块在窄屏改成横向选择列表 */
+  .settings-layout { grid-template-columns: 1fr; gap: 12px; }
+  .settings-nav {
+    position: static; flex-direction: row; gap: 8px;
+    overflow-x: auto; padding-bottom: 2px;
+  }
+  .settings-nav { overflow-x: visible; gap: 6px; }
+  .snav { flex: 1 1 0; min-width: 0; width: auto; padding: 8px 5px; gap: 5px; justify-content: center; }
+  .snav .sn-ico { flex-basis: 22px; width: 22px; height: 22px; font-size: 13px; }
+  .snav .sn-txt small { display: none; }
+  .snav .sn-txt b { font-size: 13.5px; white-space: nowrap; }
+  #magnetList .row-line { flex-wrap: wrap; gap: 6px; }
+  #magnetList .row-line .p { flex: 1 1 100%; white-space: normal; }
+  #magnetList .row-line .p small { white-space: normal; word-break: break-all; }
+  #magnetList .row-line .btn { padding: 4px 9px; font-size: 13.5px; }
+  #magnetList .row-line .sw { margin-left: auto; }
+  .ver { font-size: 12px; padding: 2px 7px; }
+  .probe-step { flex-direction: column; gap: 1px; }
+  .probe-step span:last-child { text-align: left; }
+  .dialog-foot { flex-wrap: wrap; }
 }

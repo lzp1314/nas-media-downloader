@@ -651,15 +651,16 @@ $('btnRefreshTasks').addEventListener('click', loadTasks);
 
 /* ---------------- 磁力搜索源管理 ---------------- */
 let magnetSources = [];
+let lastProbe = null;
 
 async function loadMagnetSources() {
   try {
     const d = await api('/api/magnet/sources');
     magnetSources = d.sources || [];
-    const on = magnetSources.filter((s) => s.enabled).length;
-    const p = $('magnetPill');
-    p.textContent = on ? `${on}/${magnetSources.length} 已启用` : '未启用';
-    p.className = `pill ${on ? 'ok' : ''}`;
+    const on = magnetSources.filter((x) => x.enabled).length;
+    const pill = $('magnetPill');
+    pill.textContent = on ? `${on}/${magnetSources.length} 已启用` : '未启用';
+    pill.className = `pill ${on ? 'ok' : ''}`;
     renderMagnetSources();
   } catch (err) {
     $('magnetStatus').textContent = err.message;
@@ -670,20 +671,20 @@ function renderMagnetSources() {
   $('magnetList').innerHTML = magnetSources.length
     ? magnetSources
         .map(
-          (s) => `<div class="row-line">
-            <span>${s.enabled ? '🧲' : '⚪'}</span>
-            <div class="p">${esc(s.name)}${s.usable ? '' : '（地址不合法）'}<small>${esc(s.url)}</small></div>
-            <button class="btn sm ghost" data-mgtest="${esc(s.id)}">测试</button>
-            <label class="sw" title="启用 / 停用"><input type="checkbox" data-mgtoggle="${esc(s.id)}" ${s.enabled ? 'checked' : ''} /></label>
-            <button class="btn sm danger" data-mgdel="${esc(s.id)}">移除</button>
+          (x) => `<div class="row-line">
+            <span>${x.enabled ? '🧲' : '⚪'}</span>
+            <div class="p">${esc(x.name)}${x.usable ? '' : '（地址不合法）'}<small>${esc(x.url)}${x.method === 'POST' ? ` · POST ${esc(x.postBody || '')}` : ''}</small></div>
+            <button class="btn sm ghost" data-mgtest="${esc(x.id)}">测试</button>
+            <label class="sw" title="启用 / 停用"><input type="checkbox" data-mgtoggle="${esc(x.id)}" ${x.enabled ? 'checked' : ''} /></label>
+            <button class="btn sm danger" data-mgdel="${esc(x.id)}">移除</button>
           </div>`,
         )
         .join('')
-    : '<div class="status">还没有磁搜源，在下面填一个搜索地址就能加进来。</div>';
+    : '<div class="status">还没有磁搜源。填站点首页或搜索地址，点「测试当前地址」会自动找入口。</div>';
 
   $('magnetList').querySelectorAll('[data-mgtoggle]').forEach((el) =>
     el.addEventListener('change', async () => {
-      const hit = magnetSources.find((s) => s.id === el.dataset.mgtoggle);
+      const hit = magnetSources.find((x) => x.id === el.dataset.mgtoggle);
       if (hit) hit.enabled = el.checked;
       await saveMagnetSources();
       loadMagnetSources();
@@ -691,22 +692,41 @@ function renderMagnetSources() {
   );
   $('magnetList').querySelectorAll('[data-mgdel]').forEach((el) =>
     el.addEventListener('click', async () => {
-      magnetSources = magnetSources.filter((s) => s.id !== el.dataset.mgdel);
+      magnetSources = magnetSources.filter((x) => x.id !== el.dataset.mgdel);
       await saveMagnetSources();
       loadMagnetSources();
     }),
   );
   $('magnetList').querySelectorAll('[data-mgtest]').forEach((el) =>
     el.addEventListener('click', async () => {
-      const hit = magnetSources.find((s) => s.id === el.dataset.mgtest);
+      const hit = magnetSources.find((x) => x.id === el.dataset.mgtest);
       if (!hit) return;
       $('magnetStatus').textContent = `正在测试「${hit.name}」…`;
-      const r = await api('/api/magnet/test', { method: 'POST', body: JSON.stringify(hit) });
-      $('magnetStatus').textContent = r.ok
-        ? `「${hit.name}」可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}`
-        : `「${hit.name}」不可用：${r.error}`;
+      try {
+        const r = await api('/api/magnet/test', { method: 'POST', body: JSON.stringify(hit) });
+        renderProbe(r, `「${hit.name}」诊断`);
+        $('magnetStatus').textContent = r.ok
+          ? `「${hit.name}」可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}`
+          : `「${hit.name}」没抓到磁力，看下方诊断`;
+      } catch (err) {
+        $('magnetStatus').textContent = err.message;
+      }
     }),
   );
+}
+
+/** 把探测过程逐条列出来，用户能看懂「404 → 找到表单 → 详情页命中」 */
+function renderProbe(r, title) {
+  const el = $('magnetProbe');
+  if (!r || !Array.isArray(r.steps) || !r.steps.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = `<div class="probe-head">${esc(title)} · ${r.ok ? `找到 ${r.count} 个磁力` : '没找到可用入口'}</div>`
+    + (r.sample?.length ? `<div class="probe-sample">示例：${esc(r.sample.join('、'))}</div>` : '')
+    + `<div class="probe-steps">${r.steps.map((x) => `<div class="probe-step${x.found ? ' hit' : ''}"><span>${esc(x.label)}</span><span>${esc(x.note)}</span></div>`).join('')}</div>`
+    + (r.hint ? `<div class="probe-hint">${esc(r.hint)}</div>` : '');
 }
 
 async function saveMagnetSources() {
@@ -716,18 +736,49 @@ async function saveMagnetSources() {
   });
 }
 
+/** 测试一个地址：后端会自动探测表单 / 跳转 / 详情页，结果缓存下来给「添加」用 */
+async function probeAddress(url, label) {
+  return api('/api/magnet/test', {
+    method: 'POST',
+    body: JSON.stringify({ url, encoding: 'utf-8', detail: 'auto' }),
+  }).then((r) => {
+    lastProbe = { url, detected: r.detected || null, ok: Boolean(r.ok) };
+    renderProbe(r, label);
+    return r;
+  });
+}
+
 $('btnMgAdd').addEventListener('click', async () => {
   const name = $('mgName').value.trim();
   const url = $('mgUrl').value.trim();
-  if (!url) return toast('请填搜索地址', true);
+  if (!url) return toast('请填站点首页或搜索地址', true);
+
+  let cfg = { url, method: 'GET', postBody: '', encoding: 'utf-8', detail: 'auto' };
+  // 地址里没有关键词占位符（比如只填了首页）→ 先自动探测出真实入口
+  if (!url.includes('{kw')) {
+    $('magnetStatus').textContent = '地址里没有 {kw}，正在自动探测搜索入口…';
+    try {
+      const r = await probeAddress(url, '自动探测');
+      if (!r.ok || !r.detected) {
+        $('magnetStatus').textContent = '没找到可用入口，看下方诊断；也可以填带 {kw} 的完整搜索地址。';
+        return;
+      }
+      cfg = { ...cfg, ...r.detected };
+      $('magnetStatus').textContent = `已识别入口（${cfg.method} ${cfg.url}），试搜到 ${r.count} 个磁力，正在添加…`;
+    } catch (err) {
+      $('magnetStatus').textContent = err.message;
+      return;
+    }
+  } else if (lastProbe?.url === url && lastProbe.ok && lastProbe.detected) {
+    // 刚才测过且探测出的入口更准，直接采用
+    cfg = { ...cfg, ...lastProbe.detected };
+  }
+
   magnetSources.push({
     id: `mg-${Date.now().toString(36)}`,
-    name: name || url.split('/')[2] || '未命名',
+    name: name || (() => { try { return new URL(url).host; } catch { return '未命名'; } })(),
     enabled: true,
-    url,
-    method: 'GET',
-    encoding: 'utf-8',
-    detail: $('mgDetail').checked,
+    ...cfg,
     detailLimit: 5,
     timeout: 12000,
   });
@@ -735,7 +786,7 @@ $('btnMgAdd').addEventListener('click', async () => {
     await saveMagnetSources();
     $('mgName').value = '';
     $('mgUrl').value = '';
-    $('mgDetail').checked = false;
+    lastProbe = null;
     toast('已添加');
     loadMagnetSources();
   } catch (err) {
@@ -746,15 +797,16 @@ $('btnMgAdd').addEventListener('click', async () => {
 
 $('btnMgTest').addEventListener('click', async () => {
   const url = $('mgUrl').value.trim();
-  if (!url) return toast('先填搜索地址再测试', true);
-  $('magnetStatus').textContent = '正在测试…';
-  const r = await api('/api/magnet/test', {
-    method: 'POST',
-    body: JSON.stringify({ url, encoding: 'utf-8', detail: $('mgDetail').checked }),
-  });
-  $('magnetStatus').textContent = r.ok
-    ? `可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}`
-    : `不可用：${r.error}`;
+  if (!url) return toast('先填站点首页或搜索地址再测试', true);
+  $('magnetStatus').textContent = '正在测试并探测搜索入口…';
+  try {
+    const r = await probeAddress(url, '测试当前地址');
+    $('magnetStatus').textContent = r.ok
+      ? `可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}；直接点「添加」即可`
+      : `没抓到磁力：${r.hint || '看下方诊断'}`;
+  } catch (err) {
+    $('magnetStatus').textContent = err.message;
+  }
 });
 
 /* ---------------- 设置 ---------------- */
@@ -1001,10 +1053,56 @@ async function loadDirs() {
   }
 }
 
+/* ---------------- 设置板块切换 ---------------- */
+document.querySelectorAll('#settingsNav .snav').forEach((b) =>
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#settingsNav .snav').forEach((x) => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.spanel').forEach((p) => p.classList.toggle('on', p.dataset.panel === b.dataset.panel));
+  }),
+);
+
+/* ---------------- 版本与检测更新 ---------------- */
+let currentVersion = '1.1.0';
+
+function setVersion(v) {
+  if (!v) return;
+  currentVersion = String(v);
+  $('verBadge').textContent = `v${currentVersion}`;
+  $('verNow').textContent = `v${currentVersion}`;
+  $('verPill').textContent = `v${currentVersion}`;
+}
+
+async function checkUpdate() {
+  const boxes = [$('verPopStatus'), $('verStatus')];
+  boxes.forEach((x) => { x.textContent = '正在检查更新…'; });
+  try {
+    const r = await api('/api/update/check');
+    let msg;
+    if (!r.ok && !r.latestSha) msg = `${r.error || '检查失败'}。${r.hint || ''}`;
+    else if (r.hasUpdate) msg = `发现新版本 v${r.latest}${r.latestNote ? ` · ${r.latestNote}` : ''}，建议更新。`;
+    else msg = `已是最新版本 v${currentVersion}${r.latestSha ? ` · 仓库最新提交 ${r.latestSha}` : ''}。`;
+    boxes.forEach((x) => { x.textContent = msg; });
+    $('verCmd').hidden = !r.hasUpdate;
+    $('verRepo').href = r.releaseUrl || '#';
+    $('verBadge').classList.toggle('has', Boolean(r.hasUpdate));
+  } catch (err) {
+    boxes.forEach((x) => { x.textContent = err.message; });
+  }
+}
+
+$('verBadge').addEventListener('click', () => { $('verModal').hidden = false; });
+$('verClose').addEventListener('click', () => { $('verModal').hidden = true; });
+$('verModal').addEventListener('click', (e) => {
+  if (e.target === $('verModal')) $('verModal').hidden = true;
+});
+$('btnCheckUpdate').addEventListener('click', checkUpdate);
+$('btnCheckUpdate2').addEventListener('click', checkUpdate);
+
 /* ---------------- 启动 ---------------- */
 (async function init() {
   try {
     const data = await api('/api/meta');
+    setVersion(data.version);
     state.meta = data.settings;
     state.sources = data.sources || null;
     renderSourceState();

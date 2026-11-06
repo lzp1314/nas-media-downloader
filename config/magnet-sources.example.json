@@ -2,20 +2,35 @@
   "_说明": [
     "把本文件复制为同目录下的 magnet-sources.json，再填入你自己的磁力搜索站点。",
     "magnet-sources.json 已被 .gitignore 排除，不会进仓库，也不会打进镜像。",
-    "url 用 {kw} 作为关键词占位；enabled 控制启用/停用，界面里也能直接开关和增删。",
-    "通用解析器会抓页面里的 magnet: 链接；若结果页只有详情页，把 detail 设为 true 会自动跟进。",
+    "关键词占位符：{kw} = URL 编码，{kw_b64} = base64（无 padding），{kw_raw} = 原样。",
+    "搜索入口是 POST 表单时，url 填表单提交地址、method 填 POST，关键词写在 postBody（如 q={kw}）；此时 url 可以不含占位符。",
+    "不确定搜索地址时，直接在界面填站点首页点「测试当前地址」，会自动解析表单、跟随跳转、跟进详情页，并把可用配置回填。",
+    "detail: auto 表示结果页没有磁力时自动跟进详情页；填 true 强制跟进、false 关闭。",
     "站点页面若为 GBK 编码，把 encoding 改成 gbk。修改后无需重启，配置按文件时间自动热加载。"
   ],
   "version": 1,
   "sources": [
     {
       "id": "custom-1",
-      "name": "示例源（默认停用）",
+      "name": "示例源 A（默认停用）",
       "enabled": false,
       "url": "https://your-domain.example/search?q={kw}",
       "method": "GET",
+      "postBody": "",
       "encoding": "utf-8",
-      "detail": false,
+      "detail": "auto",
+      "detailLimit": 5,
+      "timeout": 12000
+    },
+    {
+      "id": "custom-2",
+      "name": "示例源 B · POST 表单（默认停用）",
+      "enabled": false,
+      "url": "https://your-domain.example/",
+      "method": "POST",
+      "postBody": "q={kw}",
+      "encoding": "utf-8",
+      "detail": "auto",
       "detailLimit": 5,
       "timeout": 12000
     }

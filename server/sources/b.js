@@ -4,7 +4,8 @@ import { requireB } from './config.js';
 
 /**
  * 资源库 B 客户端（网页型索引站）
- * - 站内搜索：POST {searchUrl}（中文关键词会被站点风控清掉，中文检索走本地片库）
+ * - 站内搜索：POST {searchUrl}，站点 302 到结果页后返回中文/英文结果
+ * - 本地片库：作为站内搜索失败或结果不全时的补充，两者按链接去重合并
  * - 详情页磁力：页面内 #secure-gate 带 rid/cid/hash，需先过 click-verify（挑战码 → 行为上报 → token）再取链接
  * - 站点地址全部来自 sites.json，代码里不写死
  */
@@ -246,20 +247,40 @@ export async function bDetail(url) {
   };
 }
 
-/** 站内搜索（英文/数字有效；中文会被站点风控拦掉，返回空） */
+/**
+ * 站内搜索：提交关键词后站点会 302 到结果页，跟随重定向即可拿到中文结果。
+ * 配置里的搜索地址若写成目录形式，末尾的 / 不能丢（丢了会被 301 转成 GET，
+ * 站点只回一张「信息提示」页，看起来就像「搜不到这部片」）。
+ */
 export async function bSearch(keyword) {
   const { searchUrl, siteUrl } = requireB();
-  const res = await httpRequest(searchUrl, {
-    method: 'POST',
-    jar,
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Referer: `${siteUrl}/`,
-      Origin: siteUrl,
-    },
-    body: encodeForm({ show: 'title,ftitle,actor', keyboard: keyword }),
-  });
-  return parseResultPage(res.text);
+  const base = String(searchUrl).replace(/\/+$/, '');
+  const endpoints = /\.php$/i.test(base)
+    ? [base]
+    : [`${base}/`, `${base}/index.php`, base];
+
+  let last = { total: 0, items: [] };
+  for (const url of endpoints) {
+    try {
+      const res = await httpRequest(url, {
+        method: 'POST',
+        jar,
+        timeout: 9000,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: `${siteUrl}/`,
+          Origin: siteUrl,
+        },
+        body: encodeForm({ show: 'title,ftitle,actor', keyboard: keyword }),
+      });
+      const parsed = parseResultPage(res.text);
+      if (parsed.items.length) return parsed;
+      last = parsed;
+    } catch {
+      // 换下一个候选地址
+    }
+  }
+  return last;
 }
 
 /** 搜索结果页解析（与分类列表同构，复用通用解析） */

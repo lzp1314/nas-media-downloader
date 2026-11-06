@@ -23,6 +23,7 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.1.0</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
@@ -115,99 +116,134 @@
   <section class="view" id="view-settings">
     <div class="section-head"><h2>设置</h2></div>
 
-    <div class="card">
-      <div class="card-head"><h3>下载引擎</h3><span class="pill" id="enginePill">检测中</span></div>
-      <p class="desc">内置 aria2，开箱即用；已跑 qBittorrent 也可以切过去，BT 做种与 peer 调度更强。</p>
-      <div class="field">
-        <label>引擎</label>
-        <select id="engineSel">
-          <option value="aria2">aria2（内置，推荐）</option>
-          <option value="qbit">qBittorrent</option>
-        </select>
-        <button class="btn sm" id="btnSaveEngine">保存</button>
-      </div>
-      <div id="qbitRow" class="field" hidden>
-        <label>qBittorrent</label>
-        <input id="qbitUrl" placeholder="http://192.168.1.10:8080" />
-        <input id="qbitUser" placeholder="用户名" class="w120" />
-        <input id="qbitPass" type="password" placeholder="密码" class="w140" />
-        <button class="btn sm" id="btnSaveQbit">保存并测试</button>
-      </div>
-      <div class="status" id="engineStatus"></div>
-    </div>
+    <div class="settings-layout">
+      <nav class="settings-nav" id="settingsNav" aria-label="设置板块">
+        <button class="snav on" data-panel="general">
+          <span class="sn-ico">⚙</span>
+          <span class="sn-txt"><b>常规与下载</b><small>下载引擎、运行状态</small></span>
+        </button>
+        <button class="snav" data-panel="sources">
+          <span class="sn-ico">◎</span>
+          <span class="sn-txt"><b>资源接入</b><small>片源、账号、磁力搜索源</small></span>
+        </button>
+        <button class="snav" data-panel="dirs">
+          <span class="sn-ico">▤</span>
+          <span class="sn-txt"><b>下载目录绑定</b><small>存储库与保存位置</small></span>
+        </button>
+      </nav>
 
-    <div class="card">
-      <div class="card-head"><h3>片源接入</h3><span class="pill" id="sitePill">检测中</span></div>
-      <p class="desc">
-        片源地址与接口参数放在 <code>config/sites.json</code>（容器内为 <code>/config/sites.json</code>）。
-        这个文件已在 <code>.gitignore</code> 里排除，不会被提交，也不会打进镜像。留空即视为「未接入」。
-      </p>
-      <div class="status" id="siteStatus"></div>
-    </div>
+      <div class="settings-panels">
+        <!-- 板块一：常规与下载 -->
+        <div class="spanel on" data-panel="general">
+          <div class="card">
+            <div class="card-head"><h3>下载引擎</h3><span class="pill" id="enginePill">检测中</span></div>
+            <p class="desc">内置 aria2，开箱即用；已跑 qBittorrent 也可以切过去，BT 做种与 peer 调度更强。</p>
+            <div class="field">
+              <label>引擎</label>
+              <select id="engineSel">
+                <option value="aria2">aria2（内置，推荐）</option>
+                <option value="qbit">qBittorrent</option>
+              </select>
+              <button class="btn sm" id="btnSaveEngine">保存</button>
+            </div>
+            <div id="qbitRow" class="field" hidden>
+              <label>qBittorrent</label>
+              <input id="qbitUrl" placeholder="http://192.168.1.10:8080" />
+              <input id="qbitUser" placeholder="用户名" class="w120" />
+              <input id="qbitPass" type="password" placeholder="密码" class="w140" />
+              <button class="btn sm" id="btnSaveQbit">保存并测试</button>
+            </div>
+            <div class="status" id="engineStatus"></div>
+          </div>
 
-    <div class="card">
-      <div class="card-head"><h3>磁力搜索源</h3><span class="pill" id="magnetPill">检测中</span></div>
-      <p class="desc">
-        搜索地址写在 <code>config/magnet-sources.json</code>（容器内为 <code>/config/magnet-sources.json</code>），
-        和片源一样不进仓库、不进镜像。地址里用 <code>{kw}</code> 代替关键词，可自己增删、逐个开关、先测试再启用，改完无需重启。
-      </p>
-      <div id="magnetList"></div>
-      <div class="field">
-        <label>名称</label><input id="mgName" placeholder="例如：磁力猫" class="w140" />
-        <label>搜索地址</label><input id="mgUrl" placeholder="https://域名/search?q={kw}" />
-      </div>
-      <div class="field">
-        <label></label>
-        <label class="chk"><input type="checkbox" id="mgDetail" /> 结果页只有详情页时自动跟进</label>
-        <button class="btn sm" id="btnMgAdd">添加</button>
-        <button class="btn sm ghost" id="btnMgTest">测试当前地址</button>
-      </div>
-      <div class="status" id="magnetStatus"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><h3>资源库 A · 账号</h3><span class="pill" id="srcAPill">未登录</span></div>
-      <p class="desc">搜索不用登录，但完整资源列表要登录后才返回。登录只保存访问令牌，不保存密码。</p>
-      <div class="status" id="srcANote" hidden></div>
-      <div id="srcALogged" hidden>
-        <div class="status" id="srcAUserLine"></div>
-        <button class="btn sm danger" id="btnSrcALogout">退出登录</button>
-      </div>
-      <div id="srcAForm">
-        <div class="field"><label>账号</label><input id="srcAUser" placeholder="用户名 / 邮箱" /></div>
-        <div class="field"><label>密码</label><input id="srcAPass" type="password" placeholder="密码" /></div>
-        <div class="field">
-          <label>验证码</label>
-          <input id="srcACode" placeholder="图形验证码" class="w140" />
-          <img id="captchaImg" class="captcha" alt="点击刷新" title="点击刷新" />
-          <button class="btn sm ghost" id="btnCaptcha">换一张</button>
+          <div class="card">
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.1.0</span></div>
+            <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
+            <div class="status" id="verStatus"></div>
+            <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
+          </div>
         </div>
-        <div class="field"><label></label><button class="btn primary" id="btnSrcALogin">登录</button></div>
-      </div>
-    </div>
 
-    <div class="card">
-      <div class="card-head"><h3>资源库 B · 本地片库</h3><span class="pill" id="idxPill">未同步</span></div>
-      <p class="desc">中文搜索靠本地索引，第一次要同步一遍（几分钟）。之后每隔几天点一次，增量更新。</p>
-      <div class="field">
-        <label>每类页数</label>
-        <input id="indexPages" type="number" min="1" max="400" value="40" class="w110" />
-        <button class="btn sm" id="btnSync">开始同步</button>
-      </div>
-      <div class="status" id="syncProgress"></div>
-    </div>
+        <!-- 板块二：资源接入 -->
+        <div class="spanel" data-panel="sources">
+          <div class="card">
+            <div class="card-head"><h3>片源接入</h3><span class="pill" id="sitePill">检测中</span></div>
+            <p class="desc">
+              片源地址与接口参数放在 <code>config/sites.json</code>（容器内为 <code>/config/sites.json</code>）。
+              这个文件已在 <code>.gitignore</code> 里排除，不会被提交，也不会打进镜像。留空即视为「未接入」。
+            </p>
+            <div class="status" id="siteStatus"></div>
+          </div>
 
-    <div class="card">
-      <div class="card-head"><h3>下载目录</h3></div>
-      <p class="desc">只能写进容器挂载的目录里。这里列出的文件夹，会在下载时作为快捷选项。</p>
-      <div id="dirList"></div>
-      <div class="field" style="margin-top:12px">
-        <label>新增目录</label>
-        <input id="newDirPath" placeholder="例如 /downloads/电影" />
-        <input id="newDirLabel" placeholder="显示名" class="w120" />
-        <button class="btn sm" id="btnAddDir">添加</button>
+          <div class="card">
+            <div class="card-head"><h3>磁力搜索源</h3><span class="pill" id="magnetPill">检测中</span></div>
+            <p class="desc">
+              搜索地址写在 <code>config/magnet-sources.json</code>（容器内为 <code>/config/magnet-sources.json</code>），不进仓库、不进镜像。
+              直接填站点首页也行，程序会自己找搜索表单、跟随跳转、抓详情页里的磁力；改完无需重启。
+            </p>
+            <div id="magnetList"></div>
+            <div class="field">
+              <label>名称</label><input id="mgName" placeholder="例如：磁力搜索" class="w140" />
+              <label>搜索地址</label><input id="mgUrl" placeholder="站点首页，或 https://域名/search?q={kw}" />
+            </div>
+            <div class="field">
+              <label></label>
+              <button class="btn sm" id="btnMgAdd">添加</button>
+              <button class="btn sm ghost" id="btnMgTest">测试当前地址</button>
+            </div>
+            <div class="status" id="magnetStatus"></div>
+            <div class="probe" id="magnetProbe" hidden></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>资源库 A · 账号</h3><span class="pill" id="srcAPill">未登录</span></div>
+            <p class="desc">搜索不用登录，但完整资源列表要登录后才返回。登录只保存访问令牌，不保存密码。</p>
+            <div class="status" id="srcANote" hidden></div>
+            <div id="srcALogged" hidden>
+              <div class="status" id="srcAUserLine"></div>
+              <button class="btn sm danger" id="btnSrcALogout">退出登录</button>
+            </div>
+            <div id="srcAForm">
+              <div class="field"><label>账号</label><input id="srcAUser" placeholder="用户名 / 邮箱" /></div>
+              <div class="field"><label>密码</label><input id="srcAPass" type="password" placeholder="密码" /></div>
+              <div class="field">
+                <label>验证码</label>
+                <input id="srcACode" placeholder="图形验证码" class="w140" />
+                <img id="captchaImg" class="captcha" alt="点击刷新" title="点击刷新" />
+                <button class="btn sm ghost" id="btnCaptcha">换一张</button>
+              </div>
+              <div class="field"><label></label><button class="btn primary" id="btnSrcALogin">登录</button></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>资源库 B · 本地片库</h3><span class="pill" id="idxPill">未同步</span></div>
+            <p class="desc">站内实时搜索优先，本地索引用于站点抖动时兜底。第一次同步要几分钟，之后每隔几天点一次增量更新。</p>
+            <div class="field">
+              <label>每类页数</label>
+              <input id="indexPages" type="number" min="1" max="400" value="40" class="w110" />
+              <button class="btn sm" id="btnSync">开始同步</button>
+            </div>
+            <div class="status" id="syncProgress"></div>
+          </div>
+        </div>
+
+        <!-- 板块三：下载目录绑定 -->
+        <div class="spanel" data-panel="dirs">
+          <div class="card">
+            <div class="card-head"><h3>下载目录绑定</h3></div>
+            <p class="desc">只能写进容器挂载的目录里。这里列出的文件夹，会在下载时作为快捷选项。</p>
+            <div id="dirList"></div>
+            <div class="field" style="margin-top:12px">
+              <label>新增目录</label>
+              <input id="newDirPath" placeholder="例如 /downloads/电影" />
+              <input id="newDirLabel" placeholder="显示名" class="w120" />
+              <button class="btn sm" id="btnAddDir">添加</button>
+            </div>
+            <div class="status" id="diskLine"></div>
+          </div>
+        </div>
       </div>
-      <div class="status" id="diskLine"></div>
     </div>
   </section>
 </main>
@@ -240,6 +276,24 @@
     <div class="dialog-foot">
       <button class="btn ghost" id="dirCancel">取消</button>
       <button class="btn primary" id="dirConfirm">开始下载</button>
+    </div>
+  </div>
+</div>
+
+<!-- 版本与更新 -->
+<div class="modal" id="verModal" hidden>
+  <div class="dialog ver-dialog">
+    <h3>版本与更新</h3>
+    <div class="ver-now">当前版本 <b id="verNow">v1.1.0</b></div>
+    <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
+    <div class="ver-cmd" id="verCmd" hidden>
+      <small>在 NAS 的 compose 目录执行：</small>
+      <code>docker compose pull &amp;&amp; docker compose up -d</code>
+    </div>
+    <div class="dialog-foot">
+      <a class="btn ghost" id="verRepo" href="#" target="_blank" rel="noopener">查看仓库</a>
+      <button class="btn ghost" id="verClose">关闭</button>
+      <button class="btn primary" id="btnCheckUpdate">检测更新</button>
     </div>
   </div>
 </div>

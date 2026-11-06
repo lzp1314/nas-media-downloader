@@ -6,9 +6,9 @@ import { CATEGORIES, parseListPage } from './sources/b.js';
 import { requireB, siteStatus } from './sources/config.js';
 
 /**
- * 资源库 B 的本地片库。
- * 该站的站内搜索会拦中文关键词，所以这里把分类列表页扫成本地索引：
- * 中文检索走本地内存（几十万级以内无压力），点开再实时解析详情页拿磁力。
+ * 资源库 B 的本地片库（兜底索引）。
+ * 站内实时搜索为主，这里保留一份分类列表索引：站点抖动、搜索被拦、
+ * 或用户搜的是别名时，仍能给出结果；点开后一样走实时详情页取磁力。
  */
 
 const INDEX_FILE = path.join(CONFIG_DIR, 'library.json');
@@ -67,19 +67,28 @@ export function indexStatus() {
   return { ...status, total: items.length, configured: siteStatus().b.configured };
 }
 
+/** 标题归一化：忽略空格、标点、全角数字，解决「金刚狼 2」与「金刚狼2」这类差异 */
+function norm(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[\s\u3000·:：\-—_()（）[\]【】《》.,，。!！?？'"“”‘’/\\|]/g, '');
+}
+
 export function searchIndex(keyword, limit = 60) {
   loadIndex();
-  const kw = String(keyword || '').trim().toLowerCase();
+  const kw = norm(keyword);
   if (!kw) return [];
-  const tokens = kw.split(/\s+/).filter(Boolean);
+  const tokens = String(keyword || '').trim().toLowerCase().split(/\s+/).filter(Boolean).map(norm).filter(Boolean);
   const hits = [];
   for (const it of items) {
-    const title = it.t.toLowerCase();
-    if (!tokens.every((tk) => title.includes(tk))) continue;
+    const nt = norm(it.t);
+    if (!nt) continue;
+    if (!(tokens.length ? tokens.every((tk) => nt.includes(tk)) : nt.includes(kw))) continue;
     let rank = 2;
-    if (title === kw) rank = 0;
-    else if (title.startsWith(kw)) rank = 1;
-    hits.push({ rank, len: title.length, it });
+    if (nt === kw) rank = 0;
+    else if (nt.startsWith(kw)) rank = 1;
+    hits.push({ rank, len: nt.length, it });
   }
   hits.sort((a, b) => a.rank - b.rank || a.len - b.len);
   return hits.slice(0, limit).map(({ it }) => ({
@@ -114,7 +123,9 @@ export async function syncIndex({ pages } = {}) {
   status.error = '';
 
   const seen = new Set();
+  const firstRun = items.length === 0;
   const runCategory = async (cat) => {
+    let emptyPages = 0;
     for (let page = 1; page <= maxPages; page += 1) {
       status.current = `${cat.label} 第 ${page} 页`;
       let html = '';
@@ -143,7 +154,9 @@ export async function syncIndex({ pages } = {}) {
         }
       }
       status.added += newCount;
-      if (newCount === 0 && page > 3) break; // 连续无新增，说明已经到底或重复
+      // 只有首次全量同步才允许提前收尾；增量同步要扫到底，否则新片容易被漏掉
+      if (firstRun && newCount === 0 && ++emptyPages >= 4) break;
+      if (newCount > 0) emptyPages = 0;
       await sleep(120);
     }
     status.catDone += 1;

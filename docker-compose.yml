@@ -6,12 +6,15 @@ services:
     # build: .
     container_name: nas-media-downloader
     restart: unless-stopped
-    ports:
-      - "9696:8080"          # Web 界面：http://NAS地址:9696（改左侧端口即可）
-      - "51413:51413"        # BT 监听端口 TCP
-      - "51413:51413/udp"    # BT 监听端口 UDP（DHT，务必在防火墙放通，速度全靠它）
+    # 直接使用宿主网络：
+    #  1. 部分片源站点只有 IPv6 在国内线路可达，host 网络让容器共享 NAS 的 IPv6
+    #  2. BT 监听端口不再经过 NAT 转发，DHT 与 peer 连通性更好
+    #  3. Web 端口由下面的 PORT 决定（默认 9696），不再需要 ports 映射
+    network_mode: host
     environment:
       - TZ=Asia/Shanghai
+      - PORT=9696            # Web 界面端口：http://NAS地址:9696（与防火墙放行端口一致）
+      - BT_PORT=51413        # BT 监听端口，host 模式下直接占用宿主端口
       - PUID=1000            # 飞牛用户 UID，SSH 执行 id 可查
       - PGID=1000
       - ARIA2_SECRET=nas_media_downloader_rpc   # 仅容器内部使用，可随手改

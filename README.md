@@ -45,18 +45,21 @@ cd /vol1/1000/docker/nas-media-downloader
 **`docker-compose.yml`** 只需要改端口和你的媒体目录：
 
 ```yaml
-ports:
-  - "9696:8080"          # 左侧是网页端口，可自行修改
+network_mode: host       # 使用宿主网络：共享 NAS 的 IPv6，BT 端口免 NAT
+environment:
+  - PORT=9696            # Web 界面端口
+  - BT_PORT=51413        # BT 监听端口
+  - PUID=1000            # 你的用户 UID，SSH 里执行 id 查看
+  - PGID=1000
+  - ARIA2_SECRET=换成随机字符串
 volumes:
   # 左边是 NAS 上真实的媒体目录，右边决定界面上显示的库名
   - /vol1/1000/影视:/media/影视
   - /vol4/1000/影视资源:/media/影视资源
   - ./config:/config
-environment:
-  - PUID=1000            # 你的用户 UID，SSH 里执行 id 查看
-  - PGID=1000
-  - ARIA2_SECRET=换成随机字符串
 ```
+
+容器使用宿主网络，不再需要 `ports:` 映射；部分片源站点仅 IPv6 在国内线路可达，host 模式让容器共享 NAS 的 IPv6，搜索才不会超时。
 
 `/media` 下的每个一级目录就是一个存储库，界面上按「库 → 分类文件夹」两级选择，加新的盘只要再加一行 volumes。
 
@@ -98,9 +101,11 @@ git pull && docker compose up -d --build
 
 | 端口 | 协议 | 用途 | 必需 |
 |---|---|---|---|
-| 9696 → 8080 | TCP | Web 界面 | 是 |
-| 51413 | TCP | BT 监听 | 强烈建议 |
+| 9696 | TCP | Web 界面（`PORT` 可改） | 是 |
+| 51413 | TCP | BT 监听（`BT_PORT` 可改） | 强烈建议 |
 | 51413 | UDP | DHT 监听 | 强烈建议 |
+
+宿主网络模式下容器直接监听 NAS 本机端口，无需在 Docker 里再做映射；路由器 / 防火墙按上表放行即可。
 
 **下载速度主要取决于 51413 有没有放通。** 除了 compose 里的映射，还要在路由器上做端口转发（51413 TCP + UDP，指向 NAS 内网 IP），并在 NAS 防火墙放行同端口。没放通也能下，但只能连到主动连进来的 peer，速度会明显差一截。
 

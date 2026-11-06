@@ -65,6 +65,8 @@ input-file=${CONFIG_DIR}/aria2.session
 force-save=true
 follow-torrent=true
 listen-port=${BT_PORT}
+# DHT 路由表必须落在可写的挂载目录，否则加载失败 DHT 起不来，磁力一个 peer 都找不到
+dht-file-path=${CONFIG_DIR}/aria2.dht.dat
 bt-enable-lpd=true
 enable-dht=true
 enable-dht6=false
@@ -82,7 +84,7 @@ user-agent=Transmission/2.94
 peer-id-prefix=-TR2940-
 peer-agent=Transmission/2.94
 log=${CONFIG_DIR}/aria2.log
-log-level=warn
+log-level=notice
 EOF
 
 if [ -n "$TRACKERS" ]; then

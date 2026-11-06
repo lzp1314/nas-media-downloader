@@ -15,6 +15,7 @@ services:
       - TZ=Asia/Shanghai
       - PORT=9696            # Web 界面端口：http://NAS地址:9696（与防火墙放行端口一致）
       - BT_PORT=51413        # BT 监听端口，host 模式下直接占用宿主端口
+      - ENABLE_DHT6=1        # host 网络有 IPv6，开启 IPv6 DHT 能连到更多国内 peer
       - PUID=1000            # 飞牛用户 UID，SSH 执行 id 可查
       - PGID=1000
       - ARIA2_SECRET=nas_media_downloader_rpc   # 仅容器内部使用，可随手改

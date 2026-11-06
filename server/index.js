@@ -11,6 +11,7 @@ import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
 import { sourceA } from './sources/a.js';
 import { bDetail, bSearch, bEnabled } from './sources/b.js';
 import { siteStatus } from './sources/config.js';
+import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
 import { searchIndex, syncIndex, indexStatus, loadIndex } from './indexer.js';
 import { currentEngine, aria2Engine, qbitEngine } from './engine/index.js';
 
@@ -129,7 +130,7 @@ on('GET', '/api/meta', async (req, res) => {
 });
 
 /** 界面里不出现站点名，统一用「源 A / 源 B」标识 */
-const SOURCE_LABEL = { a: '源 A', b: '源 B' };
+const SOURCE_LABEL = { a: '源 A', b: '源 B', m: '磁力搜索' };
 
 /** 提示信息里抹掉域名，避免把站点地址暴露到界面上 */
 function cleanMsg(s) {
@@ -182,6 +183,22 @@ on('POST', '/api/search', async (req, res) => {
     }
   }
 
+  // 磁力搜索源：结果先缓存，点开资源抽屉时按 key 取出，避免重复请求
+  if (sourceStatus().configured) {
+    try {
+      const r = await searchMagnet(kw);
+      if (r.items.length) {
+        raw.push({
+          source: 'm',
+          item: { id: r.key, title: kw, quality: '', tags: `磁力搜索 ${r.items.length}`, type: '' },
+        });
+      }
+      for (const n of r.notes) notes.push(`磁力搜索：${cleanMsg(n)}`);
+    } catch (err) {
+      notes.push(`磁力搜索：${cleanMsg(err.message)}`);
+    }
+  }
+
   await Promise.all(tasks);
   const items = mergeSearchItems(raw, kw);
   sendJson(res, 200, { items, notes, indexCount: indexStatus().total });
@@ -212,10 +229,15 @@ on('POST', '/api/resolve', async (req, res) => {
   let image = '';
 
   const packs = await Promise.all(
-    variants.slice(0, 4).map(async (v) => {
+    variants.slice(0, 6).map(async (v) => {
       const label = SOURCE_LABEL[v.source] || v.source;
       try {
-        const d = v.source === 'a' ? await sourceA.detail(v.id) : await bDetail(v.id);
+        const d =
+          v.source === 'a'
+            ? await sourceA.detail(v.id)
+            : v.source === 'm'
+              ? { groups: cachedGroups(v.id), meta: {}, seedCount: 0 }
+              : await bDetail(v.id);
         if (d.needLogin) needLogin = true;
         if (d.image && !image) image = d.image;
         for (const [k, val] of Object.entries(d.meta || {})) {
@@ -374,6 +396,32 @@ on('POST', '/api/settings', async (req, res) => {
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   saveSettings(clean);
   sendJson(res, 200, { ok: true, settings: publicSettings() });
+});
+
+on('GET', '/api/magnet/sources', async (req, res) => {
+  sendJson(res, 200, { sources: listSources(), ...sourceStatus() });
+});
+
+on('POST', '/api/magnet/sources', async (req, res) => {
+  const { sources } = await readBody(req);
+  const list = Array.isArray(sources) ? sources.slice(0, 30) : [];
+  for (const s of list) {
+    const url = String(s?.url || '').trim();
+    if (!/^https?:\/\//i.test(url) || !url.includes('{kw}')) {
+      return sendJson(res, 400, { error: `「${String(s?.name || '未命名')}」的搜索地址不合法，需要 http(s) 且包含 {kw}` });
+    }
+  }
+  sendJson(res, 200, { ok: true, sources: saveSources(list) });
+});
+
+on('POST', '/api/magnet/test', async (req, res) => {
+  const body = await readBody(req);
+  try {
+    const r = await testSource(body, body.keyword || '流浪地球');
+    sendJson(res, 200, { ok: true, ...r });
+  } catch (err) {
+    sendJson(res, 200, { ok: false, error: cleanMsg(err.message) });
+  }
 });
 
 on('GET', '/api/a/captcha', async (req, res) => {

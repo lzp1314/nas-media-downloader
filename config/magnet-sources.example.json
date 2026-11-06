@@ -1,0 +1,23 @@
+{
+  "_说明": [
+    "把本文件复制为同目录下的 magnet-sources.json，再填入你自己的磁力搜索站点。",
+    "magnet-sources.json 已被 .gitignore 排除，不会进仓库，也不会打进镜像。",
+    "url 用 {kw} 作为关键词占位；enabled 控制启用/停用，界面里也能直接开关和增删。",
+    "通用解析器会抓页面里的 magnet: 链接；若结果页只有详情页，把 detail 设为 true 会自动跟进。",
+    "站点页面若为 GBK 编码，把 encoding 改成 gbk。修改后无需重启，配置按文件时间自动热加载。"
+  ],
+  "version": 1,
+  "sources": [
+    {
+      "id": "custom-1",
+      "name": "示例源（默认停用）",
+      "enabled": false,
+      "url": "https://your-domain.example/search?q={kw}",
+      "method": "GET",
+      "encoding": "utf-8",
+      "detail": false,
+      "detailLimit": 5,
+      "timeout": 12000
+    }
+  ]
+}

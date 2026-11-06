@@ -68,6 +68,9 @@ function switchView(v) {
   state.view = v;
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
   document.querySelectorAll('.view').forEach((el) => el.classList.toggle('on', el.id === `view-${v}`));
+  // 设置页不显示全局搜索框；其它页保留
+  $('searchWrap').hidden = v === 'settings';
+  document.querySelector('.tabs').style.marginLeft = v === 'settings' ? 'auto' : '';
   if (v === 'tasks') loadTasks();
   if (v === 'settings') loadSettingsView();
   if (location.hash !== `#${v}`) history.replaceState(null, '', `#${v}`);
@@ -77,6 +80,17 @@ document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('cli
 
 /* ---------------- 搜索 ---------------- */
 const kwEl = $('kw');
+
+// 在任务页点搜索框时自动回到搜索页，避免看起来「点了没反应」
+const backToSearch = () => {
+  if (state.view !== 'search' && !$('searchWrap').hidden) switchView('search');
+};
+kwEl.addEventListener('focus', backToSearch);
+kwEl.addEventListener('pointerdown', backToSearch);
+$('searchWrap').addEventListener('click', () => {
+  if (state.view !== 'search') switchView('search');
+  else kwEl.focus();
+});
 
 kwEl.addEventListener('input', () => {
   const v = kwEl.value.trim();
@@ -224,7 +238,7 @@ function renderResults() {
   $('results').innerHTML = items
     .map((it, i) => {
       const srcBadges = (it.sources || [])
-        .map((s, idx) => `<span class="src${idx % 2 ? ' alt' : ''}">${s === 'a' ? '源 A' : '源 B'}</span>`)
+        .map((s, idx) => `<span class="src${idx % 2 ? ' alt' : ''}">${({ a: '源 A', b: '源 B', m: '磁力搜索' })[s] || s}</span>`)
         .join('');
       const qTags = qualityTags(it.quality)
         .map((x) => `<span class="tag hot">${esc(x)}</span>`)
@@ -601,8 +615,117 @@ async function taskAction(act, id) {
 
 $('btnRefreshTasks').addEventListener('click', loadTasks);
 
+/* ---------------- 磁力搜索源管理 ---------------- */
+let magnetSources = [];
+
+async function loadMagnetSources() {
+  try {
+    const d = await api('/api/magnet/sources');
+    magnetSources = d.sources || [];
+    const on = magnetSources.filter((s) => s.enabled).length;
+    const p = $('magnetPill');
+    p.textContent = on ? `${on}/${magnetSources.length} 已启用` : '未启用';
+    p.className = `pill ${on ? 'ok' : ''}`;
+    renderMagnetSources();
+  } catch (err) {
+    $('magnetStatus').textContent = err.message;
+  }
+}
+
+function renderMagnetSources() {
+  $('magnetList').innerHTML = magnetSources.length
+    ? magnetSources
+        .map(
+          (s) => `<div class="row-line">
+            <span>${s.enabled ? '🧲' : '⚪'}</span>
+            <div class="p">${esc(s.name)}${s.usable ? '' : '（地址不合法）'}<small>${esc(s.url)}</small></div>
+            <button class="btn sm ghost" data-mgtest="${esc(s.id)}">测试</button>
+            <label class="sw" title="启用 / 停用"><input type="checkbox" data-mgtoggle="${esc(s.id)}" ${s.enabled ? 'checked' : ''} /></label>
+            <button class="btn sm danger" data-mgdel="${esc(s.id)}">移除</button>
+          </div>`,
+        )
+        .join('')
+    : '<div class="status">还没有磁搜源，在下面填一个搜索地址就能加进来。</div>';
+
+  $('magnetList').querySelectorAll('[data-mgtoggle]').forEach((el) =>
+    el.addEventListener('change', async () => {
+      const hit = magnetSources.find((s) => s.id === el.dataset.mgtoggle);
+      if (hit) hit.enabled = el.checked;
+      await saveMagnetSources();
+      loadMagnetSources();
+    }),
+  );
+  $('magnetList').querySelectorAll('[data-mgdel]').forEach((el) =>
+    el.addEventListener('click', async () => {
+      magnetSources = magnetSources.filter((s) => s.id !== el.dataset.mgdel);
+      await saveMagnetSources();
+      loadMagnetSources();
+    }),
+  );
+  $('magnetList').querySelectorAll('[data-mgtest]').forEach((el) =>
+    el.addEventListener('click', async () => {
+      const hit = magnetSources.find((s) => s.id === el.dataset.mgtest);
+      if (!hit) return;
+      $('magnetStatus').textContent = `正在测试「${hit.name}」…`;
+      const r = await api('/api/magnet/test', { method: 'POST', body: JSON.stringify(hit) });
+      $('magnetStatus').textContent = r.ok
+        ? `「${hit.name}」可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}`
+        : `「${hit.name}」不可用：${r.error}`;
+    }),
+  );
+}
+
+async function saveMagnetSources() {
+  await api('/api/magnet/sources', {
+    method: 'POST',
+    body: JSON.stringify({ sources: magnetSources }),
+  });
+}
+
+$('btnMgAdd').addEventListener('click', async () => {
+  const name = $('mgName').value.trim();
+  const url = $('mgUrl').value.trim();
+  if (!url) return toast('请填搜索地址', true);
+  magnetSources.push({
+    id: `mg-${Date.now().toString(36)}`,
+    name: name || url.split('/')[2] || '未命名',
+    enabled: true,
+    url,
+    method: 'GET',
+    encoding: 'utf-8',
+    detail: $('mgDetail').checked,
+    detailLimit: 5,
+    timeout: 12000,
+  });
+  try {
+    await saveMagnetSources();
+    $('mgName').value = '';
+    $('mgUrl').value = '';
+    $('mgDetail').checked = false;
+    toast('已添加');
+    loadMagnetSources();
+  } catch (err) {
+    magnetSources.pop();
+    toast(err.message, true);
+  }
+});
+
+$('btnMgTest').addEventListener('click', async () => {
+  const url = $('mgUrl').value.trim();
+  if (!url) return toast('先填搜索地址再测试', true);
+  $('magnetStatus').textContent = '正在测试…';
+  const r = await api('/api/magnet/test', {
+    method: 'POST',
+    body: JSON.stringify({ url, encoding: 'utf-8', detail: $('mgDetail').checked }),
+  });
+  $('magnetStatus').textContent = r.ok
+    ? `可用，试搜到 ${r.count} 个磁力${r.sample?.length ? `：${r.sample.join('、')}` : ''}`
+    : `不可用：${r.error}`;
+});
+
 /* ---------------- 设置 ---------------- */
 async function loadSettingsView() {
+  loadMagnetSources();
   try {
     const data = await api('/api/meta');
     const s = data.settings;

@@ -134,6 +134,26 @@
     </div>
 
     <div class="card">
+      <div class="card-head"><h3>磁力搜索源</h3><span class="pill" id="magnetPill">检测中</span></div>
+      <p class="desc">
+        搜索地址写在 <code>config/magnet-sources.json</code>（容器内为 <code>/config/magnet-sources.json</code>），
+        和片源一样不进仓库、不进镜像。地址里用 <code>{kw}</code> 代替关键词，可自己增删、逐个开关、先测试再启用，改完无需重启。
+      </p>
+      <div id="magnetList"></div>
+      <div class="field">
+        <label>名称</label><input id="mgName" placeholder="例如：磁力猫" class="w140" />
+        <label>搜索地址</label><input id="mgUrl" placeholder="https://域名/search?q={kw}" />
+      </div>
+      <div class="field">
+        <label></label>
+        <label class="chk"><input type="checkbox" id="mgDetail" /> 结果页只有详情页时自动跟进</label>
+        <button class="btn sm" id="btnMgAdd">添加</button>
+        <button class="btn sm ghost" id="btnMgTest">测试当前地址</button>
+      </div>
+      <div class="status" id="magnetStatus"></div>
+    </div>
+
+    <div class="card">
       <div class="card-head"><h3>资源库 A · 账号</h3><span class="pill" id="srcAPill">未登录</span></div>
       <p class="desc">搜索不用登录，但完整资源列表要登录后才返回。登录只保存访问令牌，不保存密码。</p>
       <div class="status" id="srcANote" hidden></div>

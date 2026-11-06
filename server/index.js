@@ -122,10 +122,16 @@ on('GET', '/api/meta', async (req, res) => {
   const settings = publicSettings();
   const engine = currentEngine();
   const ping = await engine.ping();
+  const sites = siteStatus();
   sendJson(res, 200, {
     settings,
     engine: { name: engine.name, ...ping },
     index: indexStatus(),
+    sources: {
+      a: Boolean(sites.a.configured),
+      b: Boolean(sites.b.configured),
+      m: Boolean(sourceStatus().configured),
+    },
   });
 });
 
@@ -184,7 +190,7 @@ on('POST', '/api/search', async (req, res) => {
   }
 
   // 磁力搜索源：结果先缓存，点开资源抽屉时按 key 取出，避免重复请求
-  if (sourceStatus().configured) {
+  if ((source === 'all' || source === 'm') && sourceStatus().configured) {
     try {
       const r = await searchMagnet(kw);
       if (r.items.length) {
@@ -518,7 +524,8 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`[media-downloader] 存储库: ${r} ${ok ? '✓ 可读写' : '✗ 未挂载（请检查 volumes）'}`);
   }
   Promise.all([aria2Engine.ping(), qbitEngine.ping().catch(() => ({ ok: false }))]).then(([a, q]) => {
-    console.log(`[media-downloader] aria2: ${a.ok ? `ok ${a.version}` : `不可用 (${a.error})`}`);
+    if (a.ok) console.log(`[media-downloader] aria2: ok ${a.version}`);
+    else console.error(`[media-downloader] aria2 离线：${a.error} —— 下载功能不可用，请查看 /config/aria2.log`);
     console.log(`[media-downloader] qbit : ${q.ok ? `ok ${q.version}` : '未连接'}`);
   });
 });

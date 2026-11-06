@@ -14,6 +14,7 @@ const KEYS = [
   'files',
   'bittorrent',
   'followedBy',
+  'dir',
 ];
 
 function nameOf(st) {
@@ -41,6 +42,17 @@ function mapStatus(st) {
     default:
       return st.status || 'unknown';
   }
+}
+
+/** 底层网络错误换成用户能看懂的提示，避免界面只显示 "fetch failed" */
+function engineError(err) {
+  const msg = String(err?.message || err);
+  if (err?.name === 'AbortError') return new Error('下载引擎响应超时，请查看容器日志');
+  const code = String(err?.cause?.code || '');
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|socket hang up|UND_ERR/i.test(`${msg} ${code}`)) {
+    return new Error('下载引擎未启动（离线），请重启容器并查看 aria2 日志');
+  }
+  return err instanceof Error ? err : new Error(msg);
 }
 
 class Aria2Engine {
@@ -73,9 +85,19 @@ class Aria2Engine {
       if (!json) throw new Error('aria2 返回异常');
       if (json.error) throw new Error(json.error.message || 'aria2 调用失败');
       return json.result;
+    } catch (err) {
+      throw engineError(err);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * 每次任务变更后立刻把会话写入 /config/aria2.session。
+   * 容器被强制 kill 时来不及优雅退出，靠这个保证重启后任务列表不丢。
+   */
+  persist() {
+    this.rpc('aria2.saveSession').catch(() => null);
   }
 
   async ping() {
@@ -89,6 +111,7 @@ class Aria2Engine {
 
   async add({ magnet, dir }) {
     const gid = await this.rpc('aria2.addUri', [[magnet], { dir, 'bt-save-metadata': 'true' }]);
+    this.persist();
     return { id: gid };
   }
 
@@ -135,10 +158,12 @@ class Aria2Engine {
     } catch {
       await this.rpc('aria2.forcePause', [gid]);
     }
+    this.persist();
   }
 
   async resume(gid) {
     await this.rpc('aria2.unpause', [gid]);
+    this.persist();
   }
 
   async remove(gid) {
@@ -148,6 +173,7 @@ class Aria2Engine {
       /* 已停止的任务忽略 */
     }
     await this.rpc('aria2.removeDownloadResult', [gid]).catch(() => null);
+    this.persist();
   }
 }
 

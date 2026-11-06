@@ -64,10 +64,22 @@
     </div>
 
     <div class="resultbar" id="resultbar" hidden>
-      <div class="scopebar" id="scopeChips">
-        <button class="chip on" data-scope="all">全部</button>
-        <button class="chip" data-scope="movie">电影</button>
-        <button class="chip" data-scope="tv">电视剧</button>
+      <div class="filterrow">
+        <span class="filterlabel">类型</span>
+        <div class="scopebar" id="scopeChips">
+          <button class="chip on" data-scope="all">全部</button>
+          <button class="chip" data-scope="movie">电影</button>
+          <button class="chip" data-scope="tv">电视剧</button>
+        </div>
+      </div>
+      <div class="filterrow">
+        <span class="filterlabel">来源</span>
+        <div class="scopebar" id="sourceChips">
+          <button class="chip on" data-source="all"><i class="dot"></i>全部来源</button>
+          <button class="chip" data-source="a"><i class="dot"></i>源 A</button>
+          <button class="chip" data-source="b"><i class="dot"></i>源 B</button>
+          <button class="chip" data-source="m"><i class="dot"></i>磁力搜索</button>
+        </div>
       </div>
       <div class="counter" id="counter"></div>
     </div>

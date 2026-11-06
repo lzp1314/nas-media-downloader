@@ -6,9 +6,11 @@ const state = {
   view: 'search',
   keyword: '',
   scope: 'all',
+  source: 'all',
   items: [],
   notes: [],
   meta: null,
+  sources: null,
   dirs: null,
   flatDirs: [],
   selectedDir: '',
@@ -25,8 +27,20 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function friendly(msg) {
+  return String(msg || '')
+    .replace(/fetch failed|Failed to fetch/i, '下载引擎未就绪，请重启容器并查看日志')
+    .replace(/ECONNREFUSED|UND_ERR_CONNECT_REFUSED/i, '下载引擎未启动')
+    .replace(/Load failed|NetworkError|network error/i, '无法连接服务，请确认容器正在运行');
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  let res;
+  try {
+    res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  } catch {
+    throw new Error('无法连接服务，请确认容器正在运行');
+  }
   if (res.status === 401) {
     const d = await res.json().catch(() => ({}));
     if (d.needLogin) {
@@ -35,13 +49,13 @@ async function api(path, opts = {}) {
     }
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `请求失败 ${res.status}`);
+  if (!res.ok) throw new Error(friendly(data.error || `请求失败 ${res.status}`));
   return data;
 }
 
 function toast(msg, isErr = false) {
   const el = $('toast');
-  el.textContent = msg;
+  el.textContent = isErr ? friendly(msg) : msg;
   el.className = `toast on${isErr ? ' err' : ''}`;
   clearTimeout(el._t);
   el._t = setTimeout(() => (el.className = 'toast'), 2800);
@@ -145,6 +159,26 @@ document.querySelectorAll('#scopeChips .chip').forEach((c) =>
   }),
 );
 
+document.querySelectorAll('#sourceChips .chip').forEach((c) =>
+  c.addEventListener('click', () => {
+    document.querySelectorAll('#sourceChips .chip').forEach((x) => x.classList.toggle('on', x === c));
+    state.source = c.dataset.source;
+    if (state.keyword) doSearch();
+  }),
+);
+
+/** 来源按钮上的小圆点：未接入的来源置灰并给出说明，方便直观挑选 */
+function renderSourceState() {
+  const s = state.sources;
+  if (!s) return;
+  document.querySelectorAll('#sourceChips .chip').forEach((c) => {
+    const k = c.dataset.source;
+    if (k === 'all') return;
+    c.classList.toggle('off', !s[k]);
+    c.title = s[k] ? '已接入' : '尚未接入，可到设置里配置';
+  });
+}
+
 function showHero(show) {
   $('hero').hidden = !show;
 }
@@ -172,7 +206,7 @@ async function doSearch() {
   try {
     const data = await api('/api/search', {
       method: 'POST',
-      body: JSON.stringify({ keyword: kw, scope: state.scope }),
+      body: JSON.stringify({ keyword: kw, scope: state.scope, source: state.source }),
     });
     if (seq !== state.searchSeq) return;
     state.items = data.items || [];
@@ -180,7 +214,7 @@ async function doSearch() {
     renderResults();
   } catch (err) {
     if (seq !== state.searchSeq) return;
-    showState(true, `搜索失败：${esc(err.message)}`, false);
+    showState(true, `搜索失败：${esc(friendly(err.message))}`, false);
   }
 }
 
@@ -238,7 +272,7 @@ function renderResults() {
   $('results').innerHTML = items
     .map((it, i) => {
       const srcBadges = (it.sources || [])
-        .map((s, idx) => `<span class="src${idx % 2 ? ' alt' : ''}">${({ a: '源 A', b: '源 B', m: '磁力搜索' })[s] || s}</span>`)
+        .map((s) => `<span class="src src-${esc(s)}">${({ a: '源 A', b: '源 B', m: '磁力搜索' })[s] || esc(s)}</span>`)
         .join('');
       const qTags = qualityTags(it.quality)
         .map((x) => `<span class="tag hot">${esc(x)}</span>`)
@@ -594,7 +628,7 @@ async function loadTasks() {
       .querySelectorAll('[data-act]')
       .forEach((btn) => btn.addEventListener('click', () => taskAction(btn.dataset.act, btn.dataset.id)));
   } catch (err) {
-    $('taskStat').textContent = `任务读取失败：${err.message}`;
+    $('taskStat').textContent = `任务读取失败：${friendly(err.message)}`;
   }
 }
 
@@ -740,7 +774,7 @@ async function loadSettingsView() {
     ep.className = `pill ${data.engine.ok ? 'ok' : 'bad'}`;
     $('engineStatus').innerHTML = data.engine.ok
       ? `版本 ${esc(data.engine.version || '—')}`
-      : `<span class="err">不可用：${esc(data.engine.error || '')}</span>`;
+      : `<span class="err">不可用：${esc(friendly(data.engine.error || ''))}</span>`;
 
     // 片源接入状态
     const okA = Boolean(s.a?.configured);
@@ -972,6 +1006,8 @@ async function loadDirs() {
   try {
     const data = await api('/api/meta');
     state.meta = data.settings;
+    state.sources = data.sources || null;
+    renderSourceState();
     state.selectedDir = data.settings.defaultDir;
     renderIndexLine(data.index);
     if (data.index?.running) pollIndex();

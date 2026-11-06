@@ -1,0 +1,22 @@
+{
+  "name": "nas-media-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NAS影视下载器：输入片名即搜即下，下载直落 NAS 指定目录，单容器部署，零 npm 依赖",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "nas",
+    "aria2",
+    "qbittorrent",
+    "download-manager",
+    "self-hosted"
+  ]
+}

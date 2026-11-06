@@ -1,0 +1,154 @@
+import path from 'node:path';
+import { loadSettings } from '../settings.js';
+
+const KEYS = [
+  'gid',
+  'status',
+  'totalLength',
+  'completedLength',
+  'downloadSpeed',
+  'uploadSpeed',
+  'connections',
+  'numSeeders',
+  'errorMessage',
+  'files',
+  'bittorrent',
+  'followedBy',
+];
+
+function nameOf(st) {
+  const bt = st.bittorrent?.info?.name;
+  if (bt) return bt;
+  const f = Array.isArray(st.files) ? st.files[0] : null;
+  if (f?.path) return path.basename(f.path);
+  return st.gid;
+}
+
+function mapStatus(st) {
+  switch (st.status) {
+    case 'active':
+      return 'downloading';
+    case 'waiting':
+      return 'queued';
+    case 'paused':
+      return 'paused';
+    case 'complete':
+      return 'done';
+    case 'error':
+      return 'error';
+    case 'removed':
+      return 'removed';
+    default:
+      return st.status || 'unknown';
+  }
+}
+
+class Aria2Engine {
+  get name() {
+    return 'aria2';
+  }
+
+  cfg() {
+    return loadSettings().aria2;
+  }
+
+  async rpc(method, params = []) {
+    const { rpc, secret } = this.cfg();
+    const body = {
+      jsonrpc: '2.0',
+      id: `nz-${Date.now()}`,
+      method,
+      params: secret ? [`token:${secret}`, ...params] : params,
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const res = await fetch(rpc, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const json = await res.json().catch(() => null);
+      if (!json) throw new Error('aria2 返回异常');
+      if (json.error) throw new Error(json.error.message || 'aria2 调用失败');
+      return json.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async ping() {
+    try {
+      const v = await this.rpc('aria2.getVersion');
+      return { ok: true, version: v.version };
+    } catch (err) {
+      return { ok: false, error: String(err.message || err) };
+    }
+  }
+
+  async add({ magnet, dir }) {
+    const gid = await this.rpc('aria2.addUri', [[magnet], { dir, 'bt-save-metadata': 'true' }]);
+    return { id: gid };
+  }
+
+  async list() {
+    const [active, waiting, stopped, stat] = await Promise.all([
+      this.rpc('aria2.tellActive', [KEYS]),
+      this.rpc('aria2.tellWaiting', [0, 200, KEYS]),
+      this.rpc('aria2.tellStopped', [0, 200, KEYS]),
+      this.rpc('aria2.getGlobalStat'),
+    ]);
+    const all = [...active, ...waiting, ...stopped];
+    const tasks = all.map((st) => {
+      const total = Number(st.totalLength) || 0;
+      const done = Number(st.completedLength) || 0;
+      return {
+        id: st.gid,
+        engine: 'aria2',
+        name: nameOf(st),
+        dir: st.dir || '',
+        size: total,
+        done,
+        progress: total > 0 ? Math.min(100, (done / total) * 100) : 0,
+        speed: Number(st.downloadSpeed) || 0,
+        uploadSpeed: Number(st.uploadSpeed) || 0,
+        peers: Number(st.connections) || 0,
+        seeders: Number(st.numSeeders) || 0,
+        status: mapStatus(st),
+        error: st.errorMessage || '',
+      };
+    });
+    return {
+      tasks,
+      globalSpeed: Number(stat.downloadSpeed) || 0,
+      globalUpload: Number(stat.uploadSpeed) || 0,
+      active: Number(stat.numActive) || 0,
+      waiting: Number(stat.numWaiting) || 0,
+      stopped: Number(stat.numStopped) || 0,
+    };
+  }
+
+  async pause(gid) {
+    try {
+      await this.rpc('aria2.pause', [gid]);
+    } catch {
+      await this.rpc('aria2.forcePause', [gid]);
+    }
+  }
+
+  async resume(gid) {
+    await this.rpc('aria2.unpause', [gid]);
+  }
+
+  async remove(gid) {
+    try {
+      await this.rpc('aria2.forceRemove', [gid]);
+    } catch {
+      /* 已停止的任务忽略 */
+    }
+    await this.rpc('aria2.removeDownloadResult', [gid]).catch(() => null);
+  }
+}
+
+export const aria2Engine = new Aria2Engine();

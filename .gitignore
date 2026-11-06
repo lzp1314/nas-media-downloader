@@ -1,0 +1,10 @@
+node_modules/
+
+# 片源配置含具体站点地址，只提交示例文件
+config/*
+!config/sites.example.json
+
+# 本地测试与运行产物
+.t/
+*.log
+.DS_Store

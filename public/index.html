@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0b0f" />
+<meta name="description" content="NAS影视下载器 —— 输入片名即搜即下，下载直接落到 NAS 指定文件夹。" />
+<title>NAS影视下载器</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<header class="bar">
+  <a class="logo" href="/" title="NAS影视下载器">
+    <span class="mark">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="7.2" y="7.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".96" />
+        <rect x="7.2" y="13.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".78" />
+        <path d="M16 19.9v5.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" />
+        <path d="M12.4 22.3 16 25.9l3.6-3.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </span>
+    <span class="name">NAS<span>影视下载器</span></span>
+  </a>
+
+  <div class="search" id="searchWrap">
+    <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+    <input id="kw" type="text" placeholder="输入影片名称，自动搜索磁力 / 网盘" autocomplete="off" spellcheck="false" />
+    <button class="clear" id="btnClear" title="清空" hidden>×</button>
+    <button class="go" id="btnSearch">搜索</button>
+  </div>
+
+  <nav class="tabs">
+    <button data-view="search" class="on">搜索</button>
+    <button data-view="tasks">任务<span class="cnt" id="taskCnt" hidden>0</span></button>
+    <button data-view="settings">设置</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ 搜索 ============ -->
+  <section class="view on" id="view-search">
+    <div class="hero" id="hero">
+      <div class="hero-brand">
+        <span class="mark lg">
+          <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="7.2" y="7.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".96" />
+            <rect x="7.2" y="13.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".78" />
+            <path d="M16 19.9v5.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" />
+            <path d="M12.4 22.3 16 25.9l3.6-3.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+      </div>
+      <h1>想看点<span class="grad">什么</span>？</h1>
+      <p>输入片名就行，自动搜磁力与网盘资源，选中直接下到 NAS 硬盘。</p>
+      <div class="quick" id="quick">
+        <button data-q="流浪地球">流浪地球</button>
+        <button data-q="三体">三体</button>
+        <button data-q="沙丘">沙丘</button>
+        <button data-q="海贼王">海贼王</button>
+        <button data-q="奥本海默">奥本海默</button>
+      </div>
+    </div>
+
+    <div class="resultbar" id="resultbar" hidden>
+      <div class="scopebar" id="scopeChips">
+        <button class="chip on" data-scope="all">全部</button>
+        <button class="chip" data-scope="movie">电影</button>
+        <button class="chip" data-scope="tv">电视剧</button>
+      </div>
+      <div class="counter" id="counter"></div>
+    </div>
+
+    <div class="notebar" id="notebar" hidden></div>
+    <div class="list" id="results"></div>
+
+    <div class="state" id="stateBox" hidden>
+      <div class="state-inner">
+        <div class="spinner" id="stateSpin"></div>
+        <div class="state-msg" id="stateMsg"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 任务 ============ -->
+  <section class="view" id="view-tasks">
+    <div class="section-head">
+      <h2>下载任务</h2>
+      <div class="taskstat" id="taskStat"></div>
+      <button class="btn ghost sm" id="btnRefreshTasks">刷新</button>
+    </div>
+    <div id="tasks" class="tasks"></div>
+    <div class="state" id="taskEmpty">
+      <div class="state-inner">
+        <div class="empty-ico">↓</div>
+        <div class="state-msg">还没有下载任务<br /><small>去搜索页找一部片，点一下就能下</small></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section class="view" id="view-settings">
+    <div class="section-head"><h2>设置</h2></div>
+
+    <div class="card">
+      <div class="card-head"><h3>下载引擎</h3><span class="pill" id="enginePill">检测中</span></div>
+      <p class="desc">内置 aria2，开箱即用；已跑 qBittorrent 也可以切过去，BT 做种与 peer 调度更强。</p>
+      <div class="field">
+        <label>引擎</label>
+        <select id="engineSel">
+          <option value="aria2">aria2（内置，推荐）</option>
+          <option value="qbit">qBittorrent</option>
+        </select>
+        <button class="btn sm" id="btnSaveEngine">保存</button>
+      </div>
+      <div id="qbitRow" class="field" hidden>
+        <label>qBittorrent</label>
+        <input id="qbitUrl" placeholder="http://192.168.1.10:8080" />
+        <input id="qbitUser" placeholder="用户名" class="w120" />
+        <input id="qbitPass" type="password" placeholder="密码" class="w140" />
+        <button class="btn sm" id="btnSaveQbit">保存并测试</button>
+      </div>
+      <div class="status" id="engineStatus"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>片源接入</h3><span class="pill" id="sitePill">检测中</span></div>
+      <p class="desc">
+        片源地址与接口参数放在 <code>config/sites.json</code>（容器内为 <code>/config/sites.json</code>）。
+        这个文件已在 <code>.gitignore</code> 里排除，不会被提交，也不会打进镜像。留空即视为「未接入」。
+      </p>
+      <div class="status" id="siteStatus"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>资源库 A · 账号</h3><span class="pill" id="srcAPill">未登录</span></div>
+      <p class="desc">搜索不用登录，但完整资源列表要登录后才返回。登录只保存访问令牌，不保存密码。</p>
+      <div class="status" id="srcANote" hidden></div>
+      <div id="srcALogged" hidden>
+        <div class="status" id="srcAUserLine"></div>
+        <button class="btn sm danger" id="btnSrcALogout">退出登录</button>
+      </div>
+      <div id="srcAForm">
+        <div class="field"><label>账号</label><input id="srcAUser" placeholder="用户名 / 邮箱" /></div>
+        <div class="field"><label>密码</label><input id="srcAPass" type="password" placeholder="密码" /></div>
+        <div class="field">
+          <label>验证码</label>
+          <input id="srcACode" placeholder="图形验证码" class="w140" />
+          <img id="captchaImg" class="captcha" alt="点击刷新" title="点击刷新" />
+          <button class="btn sm ghost" id="btnCaptcha">换一张</button>
+        </div>
+        <div class="field"><label></label><button class="btn primary" id="btnSrcALogin">登录</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>资源库 B · 本地片库</h3><span class="pill" id="idxPill">未同步</span></div>
+      <p class="desc">中文搜索靠本地索引，第一次要同步一遍（几分钟）。之后每隔几天点一次，增量更新。</p>
+      <div class="field">
+        <label>每类页数</label>
+        <input id="indexPages" type="number" min="1" max="400" value="40" class="w110" />
+        <button class="btn sm" id="btnSync">开始同步</button>
+      </div>
+      <div class="status" id="syncProgress"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>下载目录</h3></div>
+      <p class="desc">只能写进容器挂载的目录里。这里列出的文件夹，会在下载时作为快捷选项。</p>
+      <div id="dirList"></div>
+      <div class="field" style="margin-top:12px">
+        <label>新增目录</label>
+        <input id="newDirPath" placeholder="例如 /downloads/电影" />
+        <input id="newDirLabel" placeholder="显示名" class="w120" />
+        <button class="btn sm" id="btnAddDir">添加</button>
+      </div>
+      <div class="status" id="diskLine"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 资源面板 -->
+<div class="sheet-mask" id="sheetMask"></div>
+<aside class="sheet" id="sheet">
+  <div class="sheet-head">
+    <div class="poster" id="sPoster"></div>
+    <div class="sheet-info">
+      <h2 id="sTitle">资源</h2>
+      <div class="sheet-meta" id="sMeta"></div>
+    </div>
+    <button class="icon" id="sClose" title="关闭">×</button>
+  </div>
+  <div class="sheet-body" id="sBody"></div>
+</aside>
+
+<!-- 目录选择 -->
+<div class="modal" id="dirModal" hidden>
+  <div class="dialog">
+    <h3>保存到</h3>
+    <p class="tip" id="dirTip"></p>
+    <div class="dirchips" id="dirChips"></div>
+    <div class="dirnav" id="dirNav"></div>
+    <div class="newdir">
+      <input id="newSub" placeholder="在当前目录新建子文件夹…" />
+      <button class="btn sm" id="btnMkdir">新建</button>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn ghost" id="dirCancel">取消</button>
+      <button class="btn primary" id="dirConfirm">开始下载</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

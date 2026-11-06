@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0a0b0f" />
+<title>登录 · NAS影视下载器</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .gate { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+  .gate .card-box { width: min(380px, 92vw); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 26px 22px; }
+  .gate .mark { width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; margin: 0 auto 14px;
+    background: linear-gradient(140deg, #6f9bff 0%, #5b8cff 46%, #19c6a3 100%);
+    box-shadow: 0 10px 26px rgba(91, 140, 255, .32); }
+  .gate .mark svg { width: 28px; height: 28px; display: block; }
+  .gate h1 { font-size: 18px; margin: 0 0 6px; text-align: center; }
+  .gate p { color: var(--muted); font-size: 12px; margin: 0 0 18px; text-align: center; }
+  .gate input { width: 100%; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 11px 13px; border-radius: 10px; outline: none; margin-bottom: 12px; }
+  .gate button { width: 100%; }
+</style>
+</head>
+<body>
+<div class="gate">
+  <div class="card-box">
+    <span class="mark">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="7.2" y="7.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".96" />
+        <rect x="7.2" y="13.4" width="17.6" height="4.4" rx="2.2" fill="#fff" opacity=".78" />
+        <path d="M16 19.9v5.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" />
+        <path d="M12.4 22.3 16 25.9l3.6-3.6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </span>
+    <h1>NAS影视下载器</h1>
+    <p>请输入访问密码</p>
+    <input id="pwd" type="password" placeholder="访问密码" autofocus />
+    <button class="btn primary" id="go">进入</button>
+    <div class="hint" id="msg" style="margin-top:12px"></div>
+  </div>
+</div>
+<script>
+  const go = async () => {
+    const password = document.getElementById('pwd').value;
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (res.ok) location.href = '/';
+    else document.getElementById('msg').textContent = '密码错误';
+  };
+  document.getElementById('go').onclick = go;
+  document.getElementById('pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+</script>
+</body>
+</html>

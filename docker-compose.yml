@@ -1,0 +1,25 @@
+services:
+  nas-media-downloader:
+    build: .
+    image: nas-media-downloader:latest
+    container_name: nas-media-downloader
+    restart: unless-stopped
+    ports:
+      - "9696:8080"          # Web 界面：http://NAS地址:9696（改左侧端口即可）
+      - "51413:51413"        # BT 监听端口 TCP
+      - "51413:51413/udp"    # BT 监听端口 UDP（DHT，务必在防火墙放通，速度全靠它）
+    environment:
+      - TZ=Asia/Shanghai
+      - PUID=1000            # 飞牛用户 UID，SSH 执行 id 可查
+      - PGID=1000
+      - ARIA2_SECRET=nas_media_downloader_rpc   # 仅容器内部使用，可随手改
+      - ACCESS_PASSWORD=     # 留空则局域网免密；填了打开网页要先输密码
+      # /media 下的每个一级目录就是一个片库，库名取目录名，无需额外配置
+      - MEDIA_ROOT=/media
+      - DOWNLOADS_DIR=/media/影视   # aria2 的兜底下载目录
+    volumes:
+      # 左边是 NAS 上的真实路径，右边保持不动（右边决定界面上显示的名字）
+      - /vol1/1000/影视:/media/影视
+      - /vol4/1000/影视资源:/media/影视资源
+      # 配置、登录态、aria2 会话（sites.json 已被 .gitignore 排除）
+      - ./config:/config

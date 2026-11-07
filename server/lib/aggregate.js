@@ -192,11 +192,13 @@ export function normalizeResources(packs) {
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
   };
-  // 规格 chips 由站点返回的分组名统计，不写死；前端按「全部 / 种子 / 网盘」切换显示
+  // 两类资源各有一套自己的维度：种子看规格，网盘看网盘名，前端按当前类型分别展示
+  const seedSpecs = tally(seeds, (x) => x.spec || x.quality);
+  const panNames = tally(pans, (x) => x.panName);
   const specs = [
-    ...tally(seeds, (x) => x.spec || x.quality).map((x) => ({ ...x, kind: 'seed' })),
-    ...tally(pans, (x) => x.panName).map((x) => ({ ...x, kind: 'pan' })),
+    ...seedSpecs.map((x) => ({ ...x, kind: 'seed' })),
+    ...panNames.map((x) => ({ ...x, kind: 'pan' })),
   ];
-  const facets = { total: flat.length, seed: seeds.length, pan: pans.length, specs };
+  const facets = { total: flat.length, seed: seeds.length, pan: pans.length, seedSpecs, panNames, specs };
   return { total: flat.length, groups, facets };
 }

@@ -105,6 +105,22 @@ export function parseSeedGroups(d, baseUrl = '') {
   return groups;
 }
 
+/**
+ * 在线种子接口返回结构不固定：可能是数组、{list:[]}、{data:[]}，
+ * 也可能是和详情一样的 {ecca, all_seeds}。这里统一成 parseSeedGroups 认识的形状。
+ */
+export function pickSeedBuckets(json) {
+  const d = json?.data ?? json;
+  if (Array.isArray(d)) return { all_seeds: d };
+  if (!d || typeof d !== 'object') return null;
+  if (d.ecca && typeof d.ecca === 'object' && !Array.isArray(d.ecca)) return d;
+  if (Array.isArray(d.all_seeds)) return d;
+  for (const key of ['list', 'data', 'seeds', 'items', 'rows']) {
+    if (Array.isArray(d[key])) return { all_seeds: d[key] };
+  }
+  return null;
+}
+
 export class SourceA {
   constructor() {
     this.jar = new CookieJar();
@@ -229,6 +245,28 @@ export class SourceA {
     };
   }
 
+  /**
+   * 站点对「没有有效登录态」的请求只给种子数字（znum）、不给明细。
+   * 登录且是会员时仍为空，就再试一次在线种子接口；拿不到也不报错，交给上层提示。
+   */
+  async seedFallback(id, idcode) {
+    if (!this.token()) return [];
+    const bodies = [{ movice_id: id }, { id }];
+    if (idcode) bodies.push({ vid: String(idcode) });
+    for (const body of bodies) {
+      try {
+        const json = await this.request('onlineseed', { method: 'POST', body });
+        const buckets = pickSeedBuckets(json);
+        if (!buckets) continue;
+        const groups = parseSeedGroups(buckets, this.base);
+        if (groups.length) return groups;
+      } catch {
+        // 接口不存在或未登录：继续试下一种参数，最后交给上层提示
+      }
+    }
+    return [];
+  }
+
   /** 详情：返回资源列表（磁力/网盘），未登录时列表为空但会给出提示 */
   async detail(id) {
     const json = await this.request('getVideoDetail', { params: { id } });
@@ -238,9 +276,17 @@ export class SourceA {
       throw err;
     }
     const d = json.data || {};
-    const groups = parseSeedGroups(d, this.base);
+    let groups = parseSeedGroups(d, this.base);
     const wp = parseWpGroups(d);
     for (const g of wp.groups) groups.push(g);
+
+    const seedCount = Number(d.znum || 0);
+    const seedGot = groups.filter((g) => g.items.some((x) => x.kind === 'magnet' || x.kind === 'torrent')).length;
+    // 站点声明有种子但一条明细都没给：补一次兜底，仍为空则由前端说明原因
+    if (!seedGot && seedCount > 0) {
+      const extra = await this.seedFallback(d.id || id, d.idcode);
+      if (extra.length) groups = [...extra, ...groups];
+    }
 
     return {
       source: 'a',
@@ -258,8 +304,8 @@ export class SourceA {
         上映: d.release || '',
         简介: d.abstract || '',
       },
-      seedCount: Number(d.znum || 0),
-      needLogin: groups.length === 0 && Number(d.znum || 0) > 0,
+      seedCount,
+      needLogin: Number(d.need_login || 0) === 1 || (groups.length === 0 && seedCount > 0),
       wp: { total: wp.total, locked: wp.locked, needWpVip: wp.needWpVip },
       groups,
     };

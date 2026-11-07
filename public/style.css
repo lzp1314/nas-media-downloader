@@ -355,6 +355,9 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   transition: border-color .15s ease;
 }
 .res:hover { border-color: var(--line-2); }
+/* display:flex 会盖掉 hidden 属性，筛选必须显式关掉 */
+.res[hidden], .qgroup[hidden], .res-block[hidden] { display: none !important; }
+.res-block { margin-top: 2px; }
 .res-main { flex: 1; min-width: 0; }
 .res-name { font-size: 15.5px; line-height: 1.45; word-break: break-all; }
 .res-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 3px; font-size: 14px; color: var(--dim); }
@@ -704,6 +707,8 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   background: var(--accent); border-color: var(--accent); color: #fff;
   box-shadow: 0 4px 16px rgba(91, 140, 255, .22);
 }
+.res-tab.off { opacity: .55; }
+.res-tab.off.active { opacity: 1; }
 .res-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
 .res-chip {
   padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px;

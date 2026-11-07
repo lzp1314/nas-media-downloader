@@ -328,6 +328,8 @@ on('POST', '/api/resolve', async (req, res) => {
   let needLogin = false;
   let meta = {};
   let image = '';
+  // 站点自己声明的种子数量：用来判断「有数字但没明细」，避免用户以为是程序丢的
+  const seedExpect = [];
 
   const packs = await Promise.all(
     variants.slice(0, 6).map(async (v) => {
@@ -347,8 +349,21 @@ on('POST', '/api/resolve', async (req, res) => {
         for (const [k, val] of Object.entries(d.meta || {})) {
           if (val && !meta[k] && String(val).length < 40) meta[k] = val;
         }
-        if (d.seedCount && (d.groups || []).length === 0) {
-          notes.push(`${label} 有 ${d.seedCount} 个资源但未返回内容，可能需要登录或开通会员`);
+        if (d.seedCount > 0) {
+          // 声明有种子却一条明细分不到：顺手确认登录态，好把原因说准（失效 / 未登录 / 权限）
+          const gotSeed = (d.groups || []).some((g) =>
+            (g.items || []).some((x) => x.kind === 'magnet' || x.kind === 'torrent'),
+          );
+          let login = '';
+          if (v.source === 'a' && !gotSeed) {
+            try {
+              const me = await sourceA.me();
+              login = me ? 'ok' : 'none';
+            } catch (e) {
+              login = /失效|登录/.test(e.message) ? 'expired' : 'unknown';
+            }
+          }
+          seedExpect.push({ label, count: d.seedCount, needLogin: Boolean(d.needLogin), login });
         }
         return { source: v.source, label, groups: d.groups || [] };
       } catch (err) {
@@ -359,6 +374,21 @@ on('POST', '/api/resolve', async (req, res) => {
   );
 
   const { total, groups, facets } = normalizeResources(packs);
+  const expectSeed = seedExpect.reduce((sum, x) => sum + x.count, 0);
+  if (expectSeed > (facets.seed || 0)) {
+    const who = seedExpect[0]?.label || '片源';
+    const login = seedExpect.find((x) => x.login)?.login || '';
+    const needSignIn = seedExpect.some((x) => x.needLogin);
+    let hint;
+    if (login === 'expired') {
+      hint = `${who}：登录状态已失效，${expectSeed} 个种子拿不到明细。到设置里重新登录${who}账号后重开本面板即可`;
+    } else if (needSignIn || login === 'none' || login === 'unknown') {
+      hint = `${who}：站点有 ${expectSeed} 个种子，但只对登录账号下发明细，当前请求没拿到。到设置里登录${who}账号后重开本面板即可`;
+    } else {
+      hint = `${who}：站点有 ${expectSeed} 个种子且账号已登录，这次仍没有下发明细（多为会员权限或站点限流），稍后重开本面板可再试`;
+    }
+    notes.push(hint);
+  }
   if (!total && !notes.length) notes.push('没有解析到可用资源，换个片源或稍后重试');
 
   sendJson(res, 200, {
@@ -369,6 +399,7 @@ on('POST', '/api/resolve', async (req, res) => {
     total,
     groups,
     facets,
+    seedExpect: expectSeed,
     notes: [...new Set(notes)],
   });
 });

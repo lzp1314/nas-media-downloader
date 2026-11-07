@@ -423,114 +423,151 @@ function renderResources(data, item) {
     return;
   }
 
-  const facets = data.facets || {};
-  const specs = Array.isArray(facets.specs) ? facets.specs : [];
-  const fTotal = Number(facets.total ?? data.total) || data.total;
-  const fSeed = Number(facets.seed ?? 0);
-  const fPan = Number(facets.pan ?? Math.max(0, fTotal - fSeed));
+  // 种子和网盘是两套维度：种子看规格（WEB-4K/杜比视界…），网盘看网盘名（夸克/百度…）
+  // 所以先按类型拆开，各自分桶、各自渲染，切换时只显示其中一块
+  const rows = data.groups.flatMap((g) => (g.items || []).map((it) => ({ ...it })));
+  const isSeedRow = (it) => Boolean(it.magnet || it.torrentUrl || it.kind === 'torrent');
+  const seedRows = rows.filter(isSeedRow);
+  const panRows = rows.filter((it) => !isSeedRow(it));
 
-  const html = data.groups
-    .map(
-      (g) => `<div class="qgroup">
-        <div class="qtitle"><b>${esc(g.label)}</b><span class="qcount">${g.items.length} 个</span></div>
-        ${g.items
-          .map((it) => {
-            const panCls = `pan-${String(it.panKey || 'other').replace(/[^a-z0-9_-]/gi, '')}`;
-            const isSeed = Boolean(it.magnet || it.torrentUrl);
-            const kindTag = isSeed
-              ? `<span class="kind seed">${it.magnet ? '磁力' : '种子'}</span>`
-              : `<span class="kind ${panCls}">${it.kind === 'ed2k' ? '电驴' : esc(it.panName || '网盘')}</span>`;
-            const extra = [
-              it.code ? `<span class="code">提取码 ${esc(it.code)}</span>` : '',
-              it.locked ? '<span class="lock">需会员取链接</span>' : '',
-            ].filter(Boolean).join('');
-            const seedAttr = it.torrentUrl ? ` data-torrent="${esc(it.torrentUrl)}"` : '';
-            const dlVal = esc(it.magnet || it.torrentUrl || '');
-            // 磁力或 .torrent 都能看目录选集；网盘展开分享列表；锁定条目只展示信息
-            const acts = isSeed
-              ? `<div class="res-acts">
-                  <button class="btn ghost sm" data-files="${dlVal}"${seedAttr} data-name="${esc(it.name)}">选集</button>
-                  <button class="btn primary sm" data-dl="${dlVal}"${seedAttr} data-name="${esc(it.name)}">下载</button>
-                </div>`
-              : it.locked
-                ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
-                : `<div class="res-acts">
-                  <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
-                  <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
-                </div>`;
-            const rowSpec = isSeed ? (it.spec || it.quality || '其他') : (it.panName || '其他');
-            return `<div class="res${it.locked ? ' locked' : ''}" data-rk="${isSeed ? 'seed' : 'pan'}" data-spec="${esc(rowSpec)}">
-              <div class="res-main">
-                <div class="res-name">${esc(it.name)}</div>
-                <div class="res-meta">
-                  <span class="sz">${esc(it.size || '大小未知')}</span>
-                  <span class="src">${esc(it.sourceLabel)}</span>
-                  ${kindTag}
-                  ${extra}
-                </div>
-              </div>
-              ${acts}
-            </div>`;
-          })
-          .join('')}
+  const bucketize = (list, pick) => {
+    const order = [];
+    const map = new Map();
+    for (const it of list) {
+      const key = String(pick(it) || '').trim() || '其他';
+      if (!map.has(key)) {
+        map.set(key, []);
+        order.push(key);
+      }
+      map.get(key).push(it);
+    }
+    return order.map((label) => ({ label, items: map.get(label) }));
+  };
+
+  const seedBuckets = bucketize(seedRows, (it) => it.spec || it.quality);
+  const panBuckets = bucketize(panRows, (it) => it.panName);
+
+  const rowHtml = (it) => {
+    const panCls = `pan-${String(it.panKey || 'other').replace(/[^a-z0-9_-]/gi, '')}`;
+    const isSeed = isSeedRow(it);
+    const kindTag = isSeed
+      ? `<span class="kind seed">${it.magnet ? '磁力' : '种子'}</span>`
+      : `<span class="kind ${panCls}">${it.kind === 'ed2k' ? '电驴' : esc(it.panName || '网盘')}</span>`;
+    const extra = [
+      it.code ? `<span class="code">提取码 ${esc(it.code)}</span>` : '',
+      it.locked ? '<span class="lock">需会员取链接</span>' : '',
+    ].filter(Boolean).join('');
+    const seedAttr = it.torrentUrl ? ` data-torrent="${esc(it.torrentUrl)}"` : '';
+    const dlVal = esc(it.magnet || it.torrentUrl || '');
+    // 磁力或 .torrent 都能看目录选集；网盘展开分享列表；锁定条目只展示信息
+    const acts = isSeed
+      ? `<div class="res-acts">
+          <button class="btn ghost sm" data-files="${dlVal}"${seedAttr} data-name="${esc(it.name)}">选集</button>
+          <button class="btn primary sm" data-dl="${dlVal}"${seedAttr} data-name="${esc(it.name)}">下载</button>
+        </div>`
+      : it.locked
+        ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
+        : `<div class="res-acts">
+          <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
+          <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
+        </div>`;
+    const rowSpec = isSeed ? (it.spec || it.quality || '其他') : (it.panName || '其他');
+    return `<div class="res${it.locked ? ' locked' : ''}" data-rk="${isSeed ? 'seed' : 'pan'}" data-spec="${esc(rowSpec)}">
+      <div class="res-main">
+        <div class="res-name">${esc(it.name)}</div>
+        <div class="res-meta">
+          <span class="sz">${esc(it.size || '大小未知')}</span>
+          <span class="src">${esc(it.sourceLabel)}</span>
+          ${kindTag}
+          ${extra}
+        </div>
+      </div>
+      ${acts}
+    </div>`;
+  };
+
+  const blockHtml = (kind, buckets, emptyTip) => {
+    if (!buckets.length) {
+      return `<div class="res-block" data-block="${kind}" hidden><div class="res-empty">${esc(emptyTip)}</div></div>`;
+    }
+    const list = buckets
+      .map(
+        (b) => `<div class="qgroup">
+        <div class="qtitle"><b>${esc(b.label)}</b><span class="qcount">${b.items.length} 个</span></div>
+        ${b.items.map(rowHtml).join('')}
       </div>`,
-    )
-    .join('');
+      )
+      .join('');
+    return `<div class="res-block" data-block="${kind}" hidden>${list}</div>`;
+  };
 
+  const seedTip = data.seedExpect
+    ? `站点有 ${data.seedExpect} 个种子，这次没有下发明细，原因见下方提示`
+    : '这个片源没有种子资源';
   const notes = (data.notes || []).filter(Boolean);
   $('sBody').innerHTML =
-    `<div class="status" style="margin:10px 0 2px">共 ${data.total} 个资源 · 点下方切换类型或规格</div>` +
+    `<div class="status" style="margin:10px 0 2px">${seedRows.length} 个种子 · ${panRows.length} 个网盘</div>` +
     `<div class="res-filter">
       <div class="res-tabs">
-        <button class="res-tab active" data-rk="all" type="button">全部 <i>${fTotal}</i></button>
-        <button class="res-tab" data-rk="seed" type="button">⬇ 种子 / 磁力 <i>${fSeed}</i></button>
-        <button class="res-tab" data-rk="pan" type="button">☁ 网盘资源 <i>${fPan}</i></button>
+        <button class="res-tab${seedRows.length ? '' : ' off'}" data-rk="seed" type="button">⬇ 种子 / 磁力 <i>${seedRows.length}</i></button>
+        <button class="res-tab${panRows.length ? '' : ' off'}" data-rk="pan" type="button">☁ 网盘资源 <i>${panRows.length}</i></button>
       </div>
       <div class="res-chips" id="resChips"></div>
     </div>` +
     `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴链接解析 / 选集</button></div>` +
-    html +
-    `<div class="res-empty" id="resEmpty" hidden>这一档暂时没有资源，换个分类看看</div>` +
+    blockHtml('seed', seedBuckets, seedTip) +
+    blockHtml('pan', panBuckets, '这个片源没有网盘资源') +
     (notes.length ? `<div class="notebar" style="margin-top:12px">${notes.map(esc).join('<br />')}</div>` : '');
 
-  // 筛选只隐藏已渲染的行，不重新请求；规格名与数量都来自服务端统计
-  const filterBar = $('sBody').querySelector('.res-filter');
-  let curKind = 'all';
-  let curSpec = '全部';
-  const chipsHtml = () => {
-    const list = specs.filter((s) => curKind === 'all' || s.kind === curKind).slice(0, 10);
-    return `<button class="res-chip${curSpec === '全部' ? ' active' : ''}" data-spec="全部" type="button">全部</button>` +
-      list.map((s) => `<button class="res-chip${curSpec === s.label ? ' active' : ''}" data-spec="${esc(s.label)}" type="button">${esc(s.label)} <i>${s.count}</i></button>`).join('');
-  };
+  // 两个类型各记一份自己的筛选项，来回切换不互相干扰；只隐藏已渲染的行，不重新请求
+  const bucketsOf = { seed: seedBuckets, pan: panBuckets };
+  const pickOf = { seed: '全部', pan: '全部' };
+  let curKind = seedRows.length ? 'seed' : 'pan';
+
   const applyResFilter = () => {
-    let visible = 0;
-    $('sBody').querySelectorAll('.res').forEach((row) => {
-      const ok = (curKind === 'all' || row.dataset.rk === curKind) &&
-        (curSpec === '全部' || row.dataset.spec === curSpec);
-      row.hidden = !ok;
-      if (ok) visible += 1;
+    const block = $('sBody').querySelector(`.res-block[data-block="${curKind}"]`);
+    $('sBody').querySelectorAll('.res-block').forEach((b) => {
+      b.hidden = b !== block;
     });
-    $('sBody').querySelectorAll('.qgroup').forEach((g) => {
-      const n = g.querySelectorAll('.res:not([hidden])').length;
-      g.hidden = n === 0;
-      const c = g.querySelector('.qcount');
-      if (c) c.textContent = `${n} 个`;
+    $('sBody').querySelectorAll('.res-tab').forEach((b) => {
+      b.classList.toggle('active', b.dataset.rk === curKind);
     });
-    $('resChips').innerHTML = chipsHtml();
-    $('resEmpty').hidden = visible > 0;
+    if (block) {
+      const pick = pickOf[curKind];
+      block.querySelectorAll('.res').forEach((row) => {
+        row.hidden = !(pick === '全部' || row.dataset.spec === pick);
+      });
+      block.querySelectorAll('.qgroup').forEach((g) => {
+        const n = g.querySelectorAll('.res:not([hidden])').length;
+        g.hidden = n === 0;
+        const c = g.querySelector('.qcount');
+        if (c) c.textContent = `${n} 个`;
+      });
+    }
+    // chips 跟着当前类型走：种子给规格，网盘给网盘名，不混着摆
+    const buckets = bucketsOf[curKind];
+    const sum = buckets.reduce((n, b) => n + b.items.length, 0);
+    const pick = pickOf[curKind];
+    $('resChips').innerHTML =
+      `<button class="res-chip${pick === '全部' ? ' active' : ''}" data-spec="全部" type="button">全部 <i>${sum}</i></button>` +
+      buckets
+        .map(
+          (b) => `<button class="res-chip${pick === b.label ? ' active' : ''}" data-spec="${esc(b.label)}" type="button">${esc(b.label)} <i>${b.items.length}</i></button>`,
+        )
+        .join('');
   };
-  filterBar.addEventListener('click', (e) => {
+
+  $('sBody').querySelector('.res-filter').addEventListener('click', (e) => {
     const tab = e.target.closest('.res-tab');
     if (tab) {
+      if (tab.dataset.rk === curKind) return;
       curKind = tab.dataset.rk;
-      curSpec = '全部';
-      filterBar.querySelectorAll('.res-tab').forEach((b) => b.classList.toggle('active', b === tab));
       applyResFilter();
       return;
     }
     const chip = e.target.closest('.res-chip');
     if (chip) {
-      curSpec = chip.dataset.spec;
+      pickOf[curKind] = chip.dataset.spec;
       applyResFilter();
     }
   });
@@ -1490,7 +1527,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.6';
+let currentVersion = '1.2.7';
 
 function setVersion(v) {
   if (!v) return;

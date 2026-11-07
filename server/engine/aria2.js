@@ -109,10 +109,39 @@ class Aria2Engine {
     }
   }
 
-  async add({ magnet, dir }) {
-    const gid = await this.rpc('aria2.addUri', [[magnet], { dir, 'bt-save-metadata': 'true' }]);
+  /**
+   * 三种入口：
+   *  - torrent(base64) + selectFile：只下种子里勾选的文件（剧集选集）
+   *  - urls：网盘直链 / 普通 http 下载，可带 header 与文件名
+   *  - magnet：整包下载（旧行为）
+   */
+  async add({ magnet, dir, selectFile, torrent, urls }) {
+    const opts = { dir };
+    if (selectFile) {
+      opts['select-file'] = String(selectFile);
+      opts['bt-remove-unselected-file'] = 'true';
+    }
+    if (torrent) {
+      const gid = await this.rpc('aria2.addTorrent', [String(torrent), [], { ...opts, 'bt-save-metadata': 'true' }]);
+      this.persist();
+      return { id: gid, count: 1 };
+    }
+    if (Array.isArray(urls) && urls.length) {
+      const ids = [];
+      for (const u of urls) {
+        const o = { ...opts };
+        if (u.out) o.out = u.out;
+        if (Array.isArray(u.headers) && u.headers.length) o.header = u.headers;
+        const gid = await this.rpc('aria2.addUri', [[u.url], o]);
+        ids.push(gid);
+      }
+      this.persist();
+      return { id: ids[0] || '', ids, count: ids.length };
+    }
+    if (!magnet) throw new Error('缺少下载地址');
+    const gid = await this.rpc('aria2.addUri', [[magnet], { ...opts, 'bt-save-metadata': 'true' }]);
     this.persist();
-    return { id: gid };
+    return { id: gid, count: 1 };
   }
 
   async list() {

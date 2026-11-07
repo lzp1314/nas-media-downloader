@@ -12,6 +12,8 @@ import { sourceA } from './sources/a.js';
 import { bDetail, bSearch, bEnabled } from './sources/b.js';
 import { siteStatus } from './sources/config.js';
 import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
+import { listTorrentFiles, readCachedTorrent } from './sources/torrent.js';
+import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
 import { searchIndex, syncIndex, indexStatus, loadIndex } from './indexer.js';
 import { currentEngine, aria2Engine, qbitEngine } from './engine/index.js';
 
@@ -364,17 +366,113 @@ on('POST', '/api/resolve', async (req, res) => {
   });
 });
 
-on('POST', '/api/download', async (req, res) => {
-  const { magnet, dir } = await readBody(req);
-  if (!magnet || !/^magnet:\?/i.test(String(magnet))) {
-    return sendJson(res, 400, { error: '仅支持磁力链接下载' });
+/* 最近一次「链接解析」结果只留在服务端，浏览器拿 rid 回来勾选文件 */
+const linkCache = new Map();
+const LINK_TTL = 30 * 60 * 1000;
+
+function putLink(kind, payload) {
+  for (const [k, v] of linkCache) if (Date.now() - v.at > LINK_TTL) linkCache.delete(k);
+  const rid = `${kind}-${crypto.randomBytes(6).toString('hex')}`;
+  linkCache.set(rid, { ...payload, at: Date.now() });
+  return rid;
+}
+
+function safeName(s) {
+  return String(s || '').replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/^\.+/, '_').slice(0, 180) || 'download';
+}
+
+/** 把一段链接解析成可勾选的文件列表：磁力读种子元数据，网盘读分享页 */
+on('POST', '/api/link/resolve', async (req, res) => {
+  const { text = '', url = '' } = await readBody(req);
+  const link = classifyLink(text || url);
+  if (link.kind === 'magnet') {
+    const info = await listTorrentFiles(link.url);
+    const files = info.files.map((f) => {
+      const base = path.basename(f.path);
+      return {
+        id: String(f.index),
+        index: f.index,
+        name: base,
+        path: f.path,
+        size: f.length,
+        sizeText: humanSize(f.length),
+        episode: detectEpisode(`${f.path} ${base}`),
+        video: isVideo(f.path),
+      };
+    });
+    const rid = putLink('bt', { kind: 'magnet', hash: info.hash, name: info.name, magnet: link.url });
+    return sendJson(res, 200, {
+      ok: true,
+      kind: 'magnet',
+      rid,
+      title: info.name,
+      files,
+      notes: [info.cached ? '种子目录已缓存，勾选后直接下载' : '已读到种子里的文件清单，勾选后只下选中的集数'],
+    });
   }
+  if (link.kind === 'url') {
+    const r = await resolveShare(link.url, link.passcode);
+    const files = r.files.map((f) => ({
+      id: f.id,
+      name: f.name,
+      path: f.path,
+      size: f.size,
+      sizeText: f.sizeText,
+      episode: f.episode,
+      video: f.video,
+      hasDirect: /^https?:\/\//i.test(f.url || '') || ['quark', 'uc', 'direct'].includes(r.provider),
+    }));
+    const rid = putLink('pan', { kind: 'pan', share: r.share, name: r.title });
+    return sendJson(res, 200, {
+      ok: true,
+      kind: 'pan',
+      rid,
+      title: r.title,
+      files,
+      needCookie: r.needCookie,
+      notes: r.notes,
+    });
+  }
+  return sendJson(res, 400, { error: '没识别出磁力链接或网盘分享链接' });
+});
+
+on('POST', '/api/download', async (req, res) => {
+  const { magnet, dir, rid, ids = [] } = await readBody(req);
   const target = findRoot(allowedRoots(), dir || loadSettings().defaultDir);
   if (!target) return sendJson(res, 403, { error: '目标目录不在允许范围内' });
   await fsp.mkdir(target.abs, { recursive: true });
   const engine = currentEngine();
-  const r = await engine.add({ magnet: String(magnet), dir: target.abs });
-  sendJson(res, 200, { ok: true, id: r.id, dir: target.abs, engine: engine.name });
+  let r;
+  if (rid) {
+    const rec = linkCache.get(rid);
+    if (!rec || Date.now() - rec.at > LINK_TTL) {
+      return sendJson(res, 400, { error: '解析结果已过期，请重新解析一次链接' });
+    }
+    const picked = Array.isArray(ids) ? ids : [];
+    if (!picked.length) return sendJson(res, 400, { error: '请先勾选要下载的文件' });
+    if (rec.kind === 'magnet') {
+      const sel = picked.map(Number).filter((n) => Number.isInteger(n) && n > 0).join(',');
+      if (!sel) return sendJson(res, 400, { error: '文件序号不合法' });
+      if (engine.name === 'qbit') {
+        // qBittorrent 用磁力原链接添加，拿到文件列表后再把未勾选的设为不下载
+        r = await engine.add({ magnet: rec.magnet, dir: target.abs, selectFile: sel, hash: rec.hash });
+      } else {
+        const buf = await readCachedTorrent(rec.hash);
+        if (!buf) return sendJson(res, 400, { error: '种子缓存已失效，请重新解析' });
+        r = await engine.add({ torrent: buf.toString('base64'), dir: target.abs, selectFile: sel });
+      }
+    } else {
+      const urls = await resolveDownloadUrls(rec.share, picked);
+      for (const u of urls) u.out = safeName(u.out);
+      r = await engine.add({ urls, dir: target.abs });
+    }
+  } else {
+    if (!magnet || !/^magnet:\?/i.test(String(magnet))) {
+      return sendJson(res, 400, { error: '仅支持磁力链接下载' });
+    }
+    r = await engine.add({ magnet: String(magnet), dir: target.abs });
+  }
+  sendJson(res, 200, { ok: true, id: r.id, count: r.count || 1, dir: target.abs, engine: engine.name });
 });
 
 on('GET', '/api/tasks', async (req, res) => {
@@ -487,7 +585,7 @@ on('GET', '/api/disk', async (req, res) => {
 
 on('POST', '/api/settings', async (req, res) => {
   const patch = await readBody(req);
-  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b'];
+  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   saveSettings(clean);

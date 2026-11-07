@@ -598,3 +598,58 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   .probe-step span:last-child { text-align: left; }
   .dialog-foot { flex-wrap: wrap; }
 }
+
+/* ---------------- 链接解析 / 选集 ---------------- */
+.hero-link {
+  display: block; margin: 18px auto 0; padding: 9px 18px;
+  border: 1px solid var(--line-2); border-radius: 999px;
+  background: rgba(91, 140, 255, .08); color: #b9caff;
+  font-size: 15px; cursor: pointer;
+}
+.hero-link:hover { background: rgba(91, 140, 255, .16); color: var(--text); }
+
+.sheet-tools { margin: 10px 0 4px; }
+.res-acts { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+
+.link-dialog { width: min(820px, 100%); }
+.dialog-head { display: flex; align-items: center; gap: 10px; }
+.dialog-head h3 { flex: 1; }
+.link-dialog .field input { flex: 1 1 260px; min-width: 0; }
+.link-dialog .status { max-height: 96px; overflow-y: auto; margin: 4px 0 10px; }
+.link-tools {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.link-tools input {
+  flex: 0 0 150px; min-width: 0; height: 32px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--text); font-size: 14px;
+}
+.link-count { margin-left: auto; color: var(--muted); font-size: 14px; }
+.link-list { margin-top: 10px; max-height: min(46vh, 420px); overflow-y: auto; }
+.link-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; margin-bottom: 5px;
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--surface); cursor: pointer;
+}
+.link-row:hover { border-color: var(--line-2); }
+.link-row.on { border-color: rgba(91, 140, 255, .45); background: rgba(91, 140, 255, .08); }
+.link-row input { flex: 0 0 auto; width: 16px; height: 16px; accent-color: #5b8cff; }
+.link-row .ln { flex: 1; min-width: 0; font-size: 15px; word-break: break-all; }
+.link-row .ep {
+  margin-right: 8px; padding: 1px 6px; border-radius: 5px;
+  background: rgba(91, 140, 255, .16); color: #a9c2ff;
+  font-size: 13px; font-weight: 600;
+}
+.link-row .ls { flex: 0 0 auto; color: var(--accent-2); font-size: 13.5px; }
+.link-row .lk { flex: 0 0 auto; color: var(--dim); font-size: 13px; }
+.link-row .lk.ok { color: #7fe3c4; }
+
+@media (max-width: 760px) {
+  .link-dialog { width: 100%; }
+  .link-tools input { flex: 1 1 100%; }
+  .link-count { margin-left: 0; }
+  .res-acts { flex: 1 1 100%; justify-content: flex-start; }
+  .link-row .ls { display: none; }
+}

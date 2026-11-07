@@ -77,12 +77,48 @@ class QbitEngine {
     }
   }
 
-  async add({ magnet, dir }) {
+  async add({ magnet, dir, urls, selectFile, hash }) {
+    const list = Array.isArray(urls) && urls.length ? urls.map((u) => u.url || u) : [magnet];
     await this.api('/torrents/add', {
       method: 'POST',
-      body: encodeForm({ urls: magnet, savepath: dir, autoTMM: 'false' }),
+      body: encodeForm({ urls: list.join('\n'), savepath: dir, autoTMM: 'false' }),
     });
-    return { id: '' };
+    // 磁力选集：等 qBittorrent 拿到文件列表后把没勾的设为不下载
+    if (selectFile && hash) {
+      this.applySelection(hash, selectFile).catch((err) => console.warn('[qbit] 选集设置失败：', err.message));
+    }
+    return { id: hash || '', count: list.length };
+  }
+
+  async applySelection(hash, selectFile) {
+    const picked = new Set(
+      String(selectFile)
+        .split(/[,\s]+/)
+        .map((x) => Number(x))
+        .filter((n) => Number.isInteger(n) && n > 0),
+    );
+    let files = [];
+    for (let i = 0; i < 20; i += 1) {
+      files = await this.api(`/torrents/files?hash=${encodeURIComponent(hash)}`).catch(() => []);
+      if (Array.isArray(files) && files.length) break;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    if (!files.length) throw new Error('尚未拿到种子文件列表');
+    // qBittorrent 的文件 index 从 0 开始，aria2 从 1 开始
+    const wanted = files.filter((f) => picked.has(Number(f.index) + 1)).map((f) => f.index);
+    const unwanted = files.filter((f) => !picked.has(Number(f.index) + 1)).map((f) => f.index);
+    if (unwanted.length) {
+      await this.api('/torrents/filePrio', {
+        method: 'POST',
+        body: encodeForm({ hash, id: unwanted.join('|'), priority: 0 }),
+      });
+    }
+    if (wanted.length) {
+      await this.api('/torrents/filePrio', {
+        method: 'POST',
+        body: encodeForm({ hash, id: wanted.join('|'), priority: 1 }),
+      });
+    }
   }
 
   async list() {

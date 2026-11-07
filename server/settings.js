@@ -81,6 +81,10 @@ function defaults() {
       lastSync: 0,
       count: 0,
     },
+    /** 网盘分享解析：只存浏览器 Cookie，不下发到界面、不进仓库 */
+    pan: {
+      cookie: '',
+    },
   };
 }
 
@@ -188,6 +192,7 @@ export function publicSettings() {
       configured: Boolean(s.qbit.username && s.qbit.password),
     },
     aria2: { rpc: s.aria2.rpc, secretSet: Boolean(s.aria2.secret) },
+    pan: { configured: Boolean(s.pan?.cookie) },
     accessPasswordSet: Boolean(process.env.ACCESS_PASSWORD),
   };
 }

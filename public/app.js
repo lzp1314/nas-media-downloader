@@ -20,6 +20,7 @@ const state = {
   detailSeq: 0,
   indexTimer: null,
   lastType: '',
+  link: null,
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -376,9 +377,16 @@ function renderResources(data, item) {
             const kindTag = it.magnet
               ? ''
               : `<span class="kind">${it.kind === 'ed2k' ? '电驴' : '网盘'}</span>`;
-            const btn = it.magnet
-              ? `<button class="btn primary sm" data-dl="${esc(it.magnet)}" data-name="${esc(it.name)}">下载</button>`
-              : `<button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>`;
+            // 磁力可展开种子目录选集；网盘可展开分享里的文件列表
+            const acts = it.magnet
+              ? `<div class="res-acts">
+                  <button class="btn ghost sm" data-files="${esc(it.magnet)}" data-name="${esc(it.name)}">选集</button>
+                  <button class="btn primary sm" data-dl="${esc(it.magnet)}" data-name="${esc(it.name)}">下载</button>
+                </div>`
+              : `<div class="res-acts">
+                  <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
+                  <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
+                </div>`;
             return `<div class="res">
               <div class="res-main">
                 <div class="res-name">${esc(it.name)}</div>
@@ -388,7 +396,7 @@ function renderResources(data, item) {
                   ${kindTag}
                 </div>
               </div>
-              ${btn}
+              ${acts}
             </div>`;
           })
           .join('')}
@@ -398,12 +406,19 @@ function renderResources(data, item) {
 
   const notes = (data.notes || []).filter(Boolean);
   $('sBody').innerHTML =
-    `<div class="status" style="margin:10px 0 2px">共 ${data.total} 个资源，优先显示磁力</div>` + html +
+    `<div class="status" style="margin:10px 0 2px">共 ${data.total} 个资源，优先显示磁力</div>` +
+    `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴链接解析 / 选集</button></div>` +
+    html +
     (notes.length ? `<div class="notebar" style="margin-top:12px">${notes.map(esc).join('<br />')}</div>` : '');
 
   $('sBody').querySelectorAll('[data-dl]').forEach((btn) =>
     btn.addEventListener('click', () => openDirPicker(btn.dataset.dl, btn.dataset.name, item.type)),
   );
+  $('sBody').querySelectorAll('[data-files]').forEach((btn) =>
+    btn.addEventListener('click', () => openLinkModal(btn.dataset.files)),
+  );
+  const paste = $('sheetLinkPaste');
+  if (paste) paste.addEventListener('click', () => openLinkModal(''));
   $('sBody').querySelectorAll('[data-copy]').forEach((btn) =>
     btn.addEventListener('click', async () => {
       try {
@@ -416,9 +431,154 @@ function renderResources(data, item) {
   );
 }
 
+/* ---------------- 链接解析 / 选集 ---------------- */
+function openLinkModal(text = '') {
+  $('linkInput').value = text || '';
+  $('linkModal').hidden = false;
+  $('linkTools').hidden = true;
+  $('linkList').innerHTML = '';
+  $('linkStatus').textContent = '';
+  $('linkDownload').disabled = true;
+  $('linkDownload').textContent = '下载选中';
+  $('linkEpFilter').value = '';
+  state.link = null;
+  if (text) doLinkResolve();
+  else setTimeout(() => $('linkInput').focus(), 30);
+}
+
+function closeLinkModal() {
+  $('linkModal').hidden = true;
+  state.link = null;
+}
+
+async function doLinkResolve() {
+  const text = $('linkInput').value.trim();
+  if (!text) return toast('先粘贴一条链接', true);
+  const btn = $('linkGo');
+  btn.disabled = true;
+  $('linkStatus').textContent = '正在读取里面的文件…磁力要等种子元数据，热门几秒、冷门可能几十秒';
+  $('linkTools').hidden = true;
+  $('linkList').innerHTML = '';
+  state.link = null;
+  try {
+    const r = await api('/api/link/resolve', { method: 'POST', body: JSON.stringify({ text }) });
+    r.selected = new Set();
+    state.link = r;
+    $('linkStatus').innerHTML = `<b>${esc(r.title)}</b> · 共 ${r.files.length} 个文件` +
+      (r.notes?.length ? `<br /><span class="sub">${r.notes.map(esc).join('<br />')}</span>` : '');
+    if (!r.files.length) {
+      $('linkDownload').disabled = true;
+      return;
+    }
+    $('linkTools').hidden = false;
+    renderLinkFiles();
+  } catch (err) {
+    $('linkStatus').textContent = friendly(err.message);
+    $('linkDownload').disabled = true;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function linkFilter() {
+  const raw = $('linkEpFilter').value.trim();
+  if (!raw) return null;
+  const range = raw.match(/^(\d{1,4})\s*[-~至]\s*(\d{1,4})$/);
+  if (range) {
+    const lo = Number(range[1]);
+    const hi = Number(range[2]);
+    return (ep) => ep !== null && ep !== undefined && ep >= Math.min(lo, hi) && ep <= Math.max(lo, hi);
+  }
+  if (/^\d{1,4}$/.test(raw)) return (ep) => ep === Number(raw);
+  const kw = raw.toLowerCase();
+  return (ep, name) => String(name || '').toLowerCase().includes(kw);
+}
+
+function visibleLinkFiles() {
+  const r = state.link;
+  if (!r) return [];
+  const f = linkFilter();
+  return f ? r.files.filter((x) => f(x.episode, x.name)) : r.files;
+}
+
+function renderLinkFiles() {
+  const r = state.link;
+  if (!r) return;
+  const rows = visibleLinkFiles();
+  $('linkList').innerHTML = rows.length
+    ? rows.map((x) => {
+        const on = r.selected.has(x.id);
+        const ep = x.episode !== null && x.episode !== undefined ? `<b class="ep">第${x.episode}集</b>` : '';
+        return `<label class="link-row${on ? ' on' : ''}">
+          <input type="checkbox" data-lid="${esc(x.id)}" ${on ? 'checked' : ''} />
+          <span class="ln">${ep}${esc(x.name)}</span>
+          <span class="ls">${esc(x.sizeText || (x.size ? fmtSize(x.size) : ''))}</span>
+          ${r.kind === 'pan' ? `<span class="lk${x.hasDirect ? ' ok' : ''}">${x.hasDirect ? '可直下' : '仅查看'}</span>` : ''}
+        </label>`;
+      }).join('')
+    : '<div class="status">没有匹配的文件，换个集数或关键词试试</div>';
+
+  $('linkList').querySelectorAll('[data-lid]').forEach((box) =>
+    box.addEventListener('change', () => {
+      if (box.checked) r.selected.add(box.dataset.lid);
+      else r.selected.delete(box.dataset.lid);
+      box.closest('.link-row')?.classList.toggle('on', box.checked);
+      updateLinkCount();
+    }),
+  );
+  updateLinkCount();
+}
+
+function updateLinkCount() {
+  const n = state.link?.selected?.size || 0;
+  $('linkCount').textContent = `已选 ${n} 个`;
+  $('linkDownload').disabled = n === 0;
+  $('linkDownload').textContent = n ? `下载选中 ${n} 个` : '下载选中';
+}
+
+$('btnLinkMode').addEventListener('click', () => openLinkModal(''));
+$('linkClose').addEventListener('click', closeLinkModal);
+$('linkCancel').addEventListener('click', closeLinkModal);
+$('linkModal').addEventListener('click', (e) => {
+  if (e.target === $('linkModal')) closeLinkModal();
+});
+$('linkGo').addEventListener('click', doLinkResolve);
+$('linkInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doLinkResolve();
+});
+$('linkEpFilter').addEventListener('input', renderLinkFiles);
+$('linkAll').addEventListener('click', () => {
+  const r = state.link;
+  if (!r) return;
+  const rows = visibleLinkFiles();
+  const allOn = rows.length > 0 && rows.every((x) => r.selected.has(x.id));
+  for (const x of rows) {
+    if (allOn) r.selected.delete(x.id);
+    else r.selected.add(x.id);
+  }
+  renderLinkFiles();
+});
+$('linkVideo').addEventListener('click', () => {
+  const r = state.link;
+  if (!r) return;
+  for (const x of visibleLinkFiles()) {
+    if (x.video) r.selected.add(x.id);
+    else r.selected.delete(x.id);
+  }
+  renderLinkFiles();
+});
+$('linkDownload').addEventListener('click', () => {
+  const r = state.link;
+  if (!r || !r.selected.size) return;
+  const ids = [...r.selected];
+  const name = r.kind === 'magnet' ? r.title : `选中的 ${ids.length} 个文件`;
+  closeLinkModal();
+  openDirPicker('', name, state.lastType || '', { rid: r.rid, ids, count: ids.length, kind: r.kind });
+});
+
 /* ---------------- 目录选择 ---------------- */
-async function openDirPicker(magnet, name, type) {
-  state.pending = { magnet, name };
+async function openDirPicker(magnet, name, type, extra = {}) {
+  state.pending = { magnet, name, ...extra };
   $('newSub').value = '';
   if (!state.dirs) await loadDirs();
   buildFlatDirs();
@@ -565,12 +725,18 @@ $('dirConfirm').addEventListener('click', async () => {
   try {
     await api('/api/download', {
       method: 'POST',
-      body: JSON.stringify({ magnet: state.pending.magnet, dir: state.selectedDir }),
+      body: JSON.stringify({
+        magnet: state.pending.magnet,
+        dir: state.selectedDir,
+        rid: state.pending.rid,
+        ids: state.pending.ids,
+      }),
     });
     $('dirModal').hidden = true;
+    const count = state.pending.count || 1;
     state.pending = null;
     closeSheet();
-    toast('已加入下载队列');
+    toast(count > 1 ? `已加入 ${count} 个下载任务` : '已加入下载队列');
     switchView('tasks');
   } catch (err) {
     toast(err.message, true);
@@ -858,6 +1024,13 @@ async function loadSettingsView() {
     }
 
     $('indexPages').value = s.b.pagesPerCategory || 40;
+    const panOk = Boolean(s.pan?.configured);
+    const pp = $('panPill');
+    pp.textContent = panOk ? '已设置' : '未设置';
+    pp.className = `pill ${panOk ? 'ok' : ''}`;
+    $('panStatus').textContent = panOk
+      ? '已保存 Cookie；重新粘贴分享链接就能取直链下载。'
+      : '未设置 Cookie：仍可查看分享里的文件列表，但不能直接下载到 NAS。';
     renderIndexLine(data.index);
     renderDirList(s.dirs);
     loadDisk();
@@ -1053,6 +1226,29 @@ async function loadDirs() {
   }
 }
 
+$('btnSavePan').addEventListener('click', async () => {
+  const cookie = $('panCookie').value.trim();
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ pan: { cookie } }) });
+    $('panCookie').value = '';
+    toast(cookie ? '已保存' : '没有内容可保存');
+    if (cookie) loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnClearPan').addEventListener('click', async () => {
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ pan: { cookie: '' } }) });
+    $('panCookie').value = '';
+    toast('已清空');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
 /* ---------------- 设置板块切换 ---------------- */
 document.querySelectorAll('#settingsNav .snav').forEach((b) =>
   b.addEventListener('click', () => {
@@ -1062,7 +1258,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.1.0';
+let currentVersion = '1.2.0';
 
 function setVersion(v) {
   if (!v) return;

@@ -383,6 +383,18 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .card-head .pill.bad { background: rgba(255, 95, 109, .12); color: #ff9098; }
 .desc { color: var(--muted); font-size: 15px; line-height: 1.75; margin: 8px 0 14px; }
 
+/* 片源接入：账号与片库是同一张卡片里的子区，不再拆成独立板块 */
+.sub-sec { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--line); }
+.sub-head { display: flex; align-items: center; gap: 10px; }
+.sub-head h4 { margin: 0; font-size: 15.5px; font-weight: 600; color: var(--text); }
+.sub-head .pill {
+  margin-left: auto; font-size: 13px; padding: 2px 9px; border-radius: 999px;
+  background: var(--surface-3); color: var(--muted);
+}
+.sub-head .pill.ok { background: rgba(34, 211, 166, .12); color: #7fe3c4; }
+.sub-head .pill.bad { background: rgba(255, 95, 109, .12); color: #ff9098; }
+.sub-sec .desc { margin: 7px 0 11px; font-size: 14px; }
+
 .field { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; flex-wrap: wrap; }
 .field label { flex: 0 0 82px; font-size: 15px; color: var(--dim); }
 .field input, .field select {

@@ -203,9 +203,10 @@ export class SourceA {
           lastErr = new Error(`${base} 返回非 JSON：${text.slice(0, 120)}`);
           continue;
         }
-        if (json.code === 10103) {
+        if (json.code === 10103 || json.code === 10104) {
+          // 10103：没带 token；10104：带了但站点判定无效
           lastErr = new Error('登录已失效，请重新登录');
-          lastErr.code = 10103;
+          lastErr.code = json.code;
           continue;
         }
         return json;
@@ -342,12 +343,14 @@ export class SourceA {
         };
       } catch (err) {
         const msg = String(err?.message || '');
+        const code = Number(err?.code || 0);
         value = {
           hasToken: true,
           valid: false,
           vip: false,
           user: null,
-          reason: /失效|过期|重新登录|10103/.test(msg) ? 'expired' : 'error',
+          // 10103 = 没带 token，10104 = 站点判定 token 无效，都算「过期需重登」
+          reason: code === 10103 || code === 10104 || /失效|过期|重新登录|1010[34]/.test(msg) ? 'expired' : 'error',
           message: msg.slice(0, 60),
         };
       }
@@ -391,12 +394,16 @@ export class SourceA {
     if (!this.token()) return null;
     const json = await this.request('getInfo');
     if (!json.success) throw new Error(json.message || '获取账户信息失败');
-    const u = json.data || {};
+    // 站点把账号信息放在 data.user 里（data 里还会有 signed 等其他字段），
+    // 也兼容直接平铺在 data 的情况
+    const payload = json.data || {};
+    const u = payload.user || payload;
     const brief = {
       username: u.username || u.nickname || '',
       nickname: u.nickname || u.username || '',
       vip: u.vip === 1 || Number(u.is_vip) === 1 || Boolean(u.vip_end && new Date(u.vip_end).getTime() > Date.now()),
       vipEnd: u.vip_end || u.vip_time || '',
+      id: u.id || 0,
     };
     saveSettings({ a: { user: brief } });
     return brief;

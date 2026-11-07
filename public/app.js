@@ -1413,7 +1413,9 @@ async function loadSettingsView() {
           } else if (st.hasToken) {
             ap.textContent = '登录失效';
             ap.className = 'pill bad';
-            $('srcAUserLine').innerHTML = `原账号 <b>${esc(s.a.username || '')}</b> 的登录状态已失效，重新登录即可恢复种子明细`;
+            // 把站点的真实原因带出来，避免「登录失效」四个字把所有情况都糊住
+            const why = st.reason === 'error' && st.message ? `（${esc(st.message)}）` : '';
+            $('srcAUserLine').innerHTML = `原账号 <b>${esc(s.a.username || '')}</b> 的登录状态已失效${why}，重新登录即可恢复种子明细`;
             $('srcALogged').hidden = true;
             $('srcAForm').hidden = !okA;
             if (okA) loadCaptcha();
@@ -1689,7 +1691,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.8';
+let currentVersion = '1.2.9';
 
 function setVersion(v) {
   if (!v) return;

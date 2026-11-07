@@ -88,12 +88,21 @@ function defaults() {
   };
 }
 
+/**
+ * 深合并：只覆盖 patch 里明确出现的字段，未出现的保持原值。
+ *
+ * 注意 base 可能是 null —— 默认配置里 user: null 这类占位就是 null，
+ * 再往里写对象时（如登录后写入 user: {…}）若直接 `k in base` 会抛
+ * “Cannot use 'in' operator to search for 'x' in null”，把整条调用链打断。
+ * 所以这里统一把非对象的 base 视为空对象。
+ */
 function deepMerge(base, patch) {
   if (Array.isArray(patch)) return patch;
   if (patch && typeof patch === 'object') {
-    const out = { ...base };
+    const obj = base && typeof base === 'object' ? base : {};
+    const out = { ...obj };
     for (const [k, v] of Object.entries(patch)) {
-      out[k] = k in base ? deepMerge(base[k], v) : v;
+      out[k] = Object.prototype.hasOwnProperty.call(obj, k) ? deepMerge(obj[k], v) : v;
     }
     return out;
   }

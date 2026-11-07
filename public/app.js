@@ -423,25 +423,34 @@ function renderResources(data, item) {
     return;
   }
 
+  const facets = data.facets || {};
+  const specs = Array.isArray(facets.specs) ? facets.specs : [];
+  const fTotal = Number(facets.total ?? data.total) || data.total;
+  const fSeed = Number(facets.seed ?? 0);
+  const fPan = Number(facets.pan ?? Math.max(0, fTotal - fSeed));
+
   const html = data.groups
     .map(
       (g) => `<div class="qgroup">
-        <div class="qtitle"><b>${esc(g.label)}</b>${g.items.length} 个</div>
+        <div class="qtitle"><b>${esc(g.label)}</b><span class="qcount">${g.items.length} 个</span></div>
         ${g.items
           .map((it) => {
             const panCls = `pan-${String(it.panKey || 'other').replace(/[^a-z0-9_-]/gi, '')}`;
-            const kindTag = it.magnet
-              ? ''
+            const isSeed = Boolean(it.magnet || it.torrentUrl);
+            const kindTag = isSeed
+              ? `<span class="kind seed">${it.magnet ? '磁力' : '种子'}</span>`
               : `<span class="kind ${panCls}">${it.kind === 'ed2k' ? '电驴' : esc(it.panName || '网盘')}</span>`;
             const extra = [
               it.code ? `<span class="code">提取码 ${esc(it.code)}</span>` : '',
               it.locked ? '<span class="lock">需会员取链接</span>' : '',
             ].filter(Boolean).join('');
-            // 磁力可展开种子目录选集；网盘可展开分享里的文件列表；被站点锁住链接的只展示信息
-            const acts = it.magnet
+            const seedAttr = it.torrentUrl ? ` data-torrent="${esc(it.torrentUrl)}"` : '';
+            const dlVal = esc(it.magnet || it.torrentUrl || '');
+            // 磁力或 .torrent 都能看目录选集；网盘展开分享列表；锁定条目只展示信息
+            const acts = isSeed
               ? `<div class="res-acts">
-                  <button class="btn ghost sm" data-files="${esc(it.magnet)}" data-name="${esc(it.name)}">选集</button>
-                  <button class="btn primary sm" data-dl="${esc(it.magnet)}" data-name="${esc(it.name)}">下载</button>
+                  <button class="btn ghost sm" data-files="${dlVal}"${seedAttr} data-name="${esc(it.name)}">选集</button>
+                  <button class="btn primary sm" data-dl="${dlVal}"${seedAttr} data-name="${esc(it.name)}">下载</button>
                 </div>`
               : it.locked
                 ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
@@ -449,7 +458,8 @@ function renderResources(data, item) {
                   <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
                   <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
                 </div>`;
-            return `<div class="res${it.locked ? ' locked' : ''}">
+            const rowSpec = isSeed ? (it.spec || it.quality || '其他') : (it.panName || '其他');
+            return `<div class="res${it.locked ? ' locked' : ''}" data-rk="${isSeed ? 'seed' : 'pan'}" data-spec="${esc(rowSpec)}">
               <div class="res-main">
                 <div class="res-name">${esc(it.name)}</div>
                 <div class="res-meta">
@@ -469,16 +479,68 @@ function renderResources(data, item) {
 
   const notes = (data.notes || []).filter(Boolean);
   $('sBody').innerHTML =
-    `<div class="status" style="margin:10px 0 2px">共 ${data.total} 个资源，优先显示磁力</div>` +
+    `<div class="status" style="margin:10px 0 2px">共 ${data.total} 个资源 · 点下方切换类型或规格</div>` +
+    `<div class="res-filter">
+      <div class="res-tabs">
+        <button class="res-tab active" data-rk="all" type="button">全部 <i>${fTotal}</i></button>
+        <button class="res-tab" data-rk="seed" type="button">⬇ 种子 / 磁力 <i>${fSeed}</i></button>
+        <button class="res-tab" data-rk="pan" type="button">☁ 网盘资源 <i>${fPan}</i></button>
+      </div>
+      <div class="res-chips" id="resChips"></div>
+    </div>` +
     `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴链接解析 / 选集</button></div>` +
     html +
+    `<div class="res-empty" id="resEmpty" hidden>这一档暂时没有资源，换个分类看看</div>` +
     (notes.length ? `<div class="notebar" style="margin-top:12px">${notes.map(esc).join('<br />')}</div>` : '');
 
+  // 筛选只隐藏已渲染的行，不重新请求；规格名与数量都来自服务端统计
+  const filterBar = $('sBody').querySelector('.res-filter');
+  let curKind = 'all';
+  let curSpec = '全部';
+  const chipsHtml = () => {
+    const list = specs.filter((s) => curKind === 'all' || s.kind === curKind).slice(0, 10);
+    return `<button class="res-chip${curSpec === '全部' ? ' active' : ''}" data-spec="全部" type="button">全部</button>` +
+      list.map((s) => `<button class="res-chip${curSpec === s.label ? ' active' : ''}" data-spec="${esc(s.label)}" type="button">${esc(s.label)} <i>${s.count}</i></button>`).join('');
+  };
+  const applyResFilter = () => {
+    let visible = 0;
+    $('sBody').querySelectorAll('.res').forEach((row) => {
+      const ok = (curKind === 'all' || row.dataset.rk === curKind) &&
+        (curSpec === '全部' || row.dataset.spec === curSpec);
+      row.hidden = !ok;
+      if (ok) visible += 1;
+    });
+    $('sBody').querySelectorAll('.qgroup').forEach((g) => {
+      const n = g.querySelectorAll('.res:not([hidden])').length;
+      g.hidden = n === 0;
+      const c = g.querySelector('.qcount');
+      if (c) c.textContent = `${n} 个`;
+    });
+    $('resChips').innerHTML = chipsHtml();
+    $('resEmpty').hidden = visible > 0;
+  };
+  filterBar.addEventListener('click', (e) => {
+    const tab = e.target.closest('.res-tab');
+    if (tab) {
+      curKind = tab.dataset.rk;
+      curSpec = '全部';
+      filterBar.querySelectorAll('.res-tab').forEach((b) => b.classList.toggle('active', b === tab));
+      applyResFilter();
+      return;
+    }
+    const chip = e.target.closest('.res-chip');
+    if (chip) {
+      curSpec = chip.dataset.spec;
+      applyResFilter();
+    }
+  });
+  applyResFilter();
+
   $('sBody').querySelectorAll('[data-dl]').forEach((btn) =>
-    btn.addEventListener('click', () => openDirPicker(btn.dataset.dl, btn.dataset.name, item.type)),
+    btn.addEventListener('click', () => openDirPicker(btn.dataset.dl, btn.dataset.name, item.type, { torrentUrl: btn.dataset.torrent || '' })),
   );
   $('sBody').querySelectorAll('[data-files]').forEach((btn) =>
-    btn.addEventListener('click', () => openLinkModal(btn.dataset.files)),
+    btn.addEventListener('click', () => openLinkModal(btn.dataset.files, { torrentUrl: btn.dataset.torrent || '' })),
   );
   const paste = $('sheetLinkPaste');
   if (paste) paste.addEventListener('click', () => openLinkModal(''));
@@ -495,7 +557,7 @@ function renderResources(data, item) {
 }
 
 /* ---------------- 链接解析 / 选集 ---------------- */
-function openLinkModal(text = '') {
+function openLinkModal(text = '', opts = {}) {
   stopLinkPoll();
   $('linkGo').disabled = false;
   $('linkInput').value = text || '';
@@ -507,6 +569,9 @@ function openLinkModal(text = '') {
   $('linkDownload').textContent = '下载选中';
   $('linkEpFilter').value = '';
   state.link = null;
+  // 资源列表里的 .torrent 直链按种子解析；用户手动改了输入框就回到普通链接解析
+  state.linkTorrent = opts.torrentUrl || '';
+  state.linkOrigin = text || '';
   if (text) doLinkResolve();
   else setTimeout(() => $('linkInput').focus(), 30);
 }
@@ -561,7 +626,8 @@ async function doLinkResolve() {
   $('linkDownload').disabled = true;
   state.link = null;
   try {
-    const r = await api('/api/link/resolve', { method: 'POST', body: JSON.stringify({ text }) });
+    const torrentUrl = state.linkTorrent && text === state.linkOrigin ? state.linkTorrent : '';
+    const r = await api('/api/link/resolve', { method: 'POST', body: JSON.stringify({ text, torrentUrl }) });
     if (!r.pending) {
       showLinkResult(r); // 兼容旧版后端
       btn.disabled = false;
@@ -837,6 +903,7 @@ $('dirConfirm').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({
         magnet: state.pending.magnet,
+        torrentUrl: state.pending.torrentUrl || '',
         dir: state.selectedDir,
         rid: state.pending.rid,
         ids: state.pending.ids,
@@ -1423,7 +1490,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.5';
+let currentVersion = '1.2.6';
 
 function setVersion(v) {
   if (!v) return;

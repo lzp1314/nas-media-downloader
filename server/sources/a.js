@@ -56,6 +56,55 @@ export function parseWpGroups(d) {
   return { groups, total, locked, needWpVip: Number(d?.need_wp_vip || 0) === 1 };
 }
 
+/**
+ * 解析详情接口里的种子/磁力（与网盘是两套数据）。
+ * 站点常只给 .torrent 下载地址（down）而不给磁力 zlink；这里补全为绝对地址并打上 torrent 标记，
+ * 由下载链路把种子还原成磁力。ecca 与 all_seeds 通常是同一批数据，按 id 去重。
+ */
+export function parseSeedGroups(d, baseUrl = '') {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  const absolute = (u) => {
+    const s = String(u || '').trim();
+    if (!s || /^https?:\/\//i.test(s)) return s;
+    return s.startsWith('/') && base ? base + s : s;
+  };
+  const seen = new Set();
+  const groups = [];
+  let seq = 0;
+  const push = (group, arr) => {
+    if (!Array.isArray(arr) || !arr.length) return;
+    const items = [];
+    for (const it of arr) {
+      seq += 1;
+      const magnet = String(it.zlink || it.link || '').trim();
+      const down = absolute(it.down);
+      const name = String(it.zname || it.name || '').trim();
+      const key = `a-seed-${it.id ?? `s${seq}`}`;
+      if (seen.has(key) || !name || (!magnet && !down)) continue;
+      seen.add(key);
+      items.push({
+        group,
+        name,
+        size: String(it.zsize || it.size || '').trim(),
+        magnet,
+        down,
+        torrentUrl: magnet ? '' : down,
+        kind: magnet ? 'magnet' : 'torrent',
+        spec: String(it.zqxd || it.definition_group || group || '').trim(),
+        quality: String(it.zqxd || '').trim(),
+        hash: extractHash(magnet),
+        dedupeKey: key,
+        time: String(it.ezt || '').trim(),
+        tags: [it.text_html, it.audio_html].filter(Boolean).map((x) => String(x).replace(/<[^>]*>/g, '')),
+      });
+    }
+    if (items.length) groups.push({ group, items });
+  };
+  for (const [name, arr] of Object.entries(d?.ecca || {})) push(name, arr);
+  push('种子 / 磁力', d?.all_seeds);
+  return groups;
+}
+
 export class SourceA {
   constructor() {
     this.jar = new CookieJar();
@@ -189,28 +238,7 @@ export class SourceA {
       throw err;
     }
     const d = json.data || {};
-    const groups = [];
-    const push = (group, arr) => {
-      if (!Array.isArray(arr) || arr.length === 0) return;
-      const items = arr
-        .map((it) => ({
-          group,
-          name: it.zname || it.name || '',
-          size: it.zsize || it.size || '',
-          magnet: it.zlink || it.link || '',
-          down: it.down || '',
-          time: it.ezt || '',
-          quality: it.zqxd || '',
-          hash: extractHash(it.zlink || it.link || ''),
-          tags: [it.text_html, it.audio_html].filter(Boolean).map((x) => String(x).replace(/<[^>]*>/g, '')),
-        }))
-        .filter((it) => it.magnet || it.down);
-      if (items.length) groups.push({ group, items });
-    };
-
-    const ecca = d.ecca || {};
-    for (const [name, arr] of Object.entries(ecca)) push(name, arr);
-    push('种子 / 磁力', d.all_seeds);
+    const groups = parseSeedGroups(d, this.base);
     const wp = parseWpGroups(d);
     for (const g of wp.groups) groups.push(g);
 

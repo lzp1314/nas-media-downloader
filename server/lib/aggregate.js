@@ -123,15 +123,17 @@ export function normalizeResources(packs) {
   for (const pack of packs) {
     for (const g of pack.groups || []) {
       for (const it of g.items || []) {
-        const url = it.magnet || it.url || it.down || '';
+        const url = it.magnet || it.url || it.torrentUrl || it.down || '';
         // 站点把链接锁住时条目仍然要列出（名字/网盘/提取码），只是没有可点的链接
         if (!url && !it.locked) continue;
-        const dedupe = it.hash || url || it.dedupeKey || `${pack.source}:${g.group}:${it.name}`;
+        const dedupe = it.dedupeKey || it.hash || url || `${pack.source}:${g.group}:${it.name}`;
         if (seen.has(dedupe)) continue;
         seen.add(dedupe);
         const isMagnet = /^magnet:/i.test(url);
+        // 站点只给 .torrent 下载地址时也算种子，不能因为不是 magnet: 开头就归成网盘
+        const isTorrent = !isMagnet && (it.kind === 'torrent' || Boolean(it.torrentUrl));
         const q = detectQuality(`${it.name || ''} ${g.group || ''}`, '');
-        const kind = isMagnet ? 'magnet' : it.kind || (/^ed2k:/i.test(url) ? 'ed2k' : 'pan');
+        const kind = isMagnet ? 'magnet' : isTorrent ? 'torrent' : it.kind || (/^ed2k:/i.test(url) ? 'ed2k' : 'pan');
         const pan = inferPan(url, it.panKey || (kind === 'pan' ? '' : kind));
         const customName = String(it.typeName || it.panName || '').trim();
         flat.push({
@@ -139,9 +141,11 @@ export function normalizeResources(packs) {
           size: it.size || '',
           url,
           magnet: isMagnet ? url : '',
+          torrentUrl: isTorrent ? (it.torrentUrl || (/^https?:\/\//i.test(url) ? url : '')) : '',
           kind,
           panKey: pan.key,
-          panName: customName && customName !== '网盘' ? customName : pan.label,
+          panName: isTorrent ? '种子' : (customName && customName !== '网盘' ? customName : pan.label),
+          spec: String(it.spec || it.quality || g.group || '').trim(),
           locked: Boolean(it.locked),
           code: String(it.code || '').trim(),
           by: String(it.by || '').trim(),
@@ -155,8 +159,8 @@ export function normalizeResources(packs) {
     }
   }
   flat.sort((a, b) => {
-    const am = a.magnet ? 1 : 0;
-    const bm = b.magnet ? 1 : 0;
+    const am = (a.magnet || a.kind === 'torrent') ? 1 : 0;
+    const bm = (b.magnet || b.kind === 'torrent') ? 1 : 0;
     if (am !== bm) return bm - am;
     if (a.locked !== b.locked) return a.locked ? 1 : -1;
     return b.rank - a.rank;
@@ -175,5 +179,24 @@ export function normalizeResources(packs) {
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || b[1].length - a[1].length;
     })
     .map(([label, items]) => ({ label: label === '其他' ? '其他资源' : label, items }));
-  return { total: flat.length, groups };
+  const seeds = flat.filter((x) => x.kind === 'magnet' || x.kind === 'torrent');
+  const seedSet = new Set(seeds);
+  const pans = flat.filter((x) => !seedSet.has(x));
+  const tally = (rows, pick) => {
+    const m = new Map();
+    for (const r of rows) {
+      const label = String(pick(r) || '').trim() || '其他';
+      m.set(label, (m.get(label) || 0) + 1);
+    }
+    return [...m.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
+  };
+  // 规格 chips 由站点返回的分组名统计，不写死；前端按「全部 / 种子 / 网盘」切换显示
+  const specs = [
+    ...tally(seeds, (x) => x.spec || x.quality).map((x) => ({ ...x, kind: 'seed' })),
+    ...tally(pans, (x) => x.panName).map((x) => ({ ...x, kind: 'pan' })),
+  ];
+  const facets = { total: flat.length, seed: seeds.length, pan: pans.length, specs };
+  return { total: flat.length, groups, facets };
 }

@@ -28,6 +28,16 @@ export async function readCachedTorrent(hash) {
   }
 }
 
+/** 站点直接给 .torrent 时落盘缓存，之后选集/aria2 走与磁力完全相同的读取路径 */
+export async function saveTorrentFile(hash, buf) {
+  const h = String(hash || '').toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(h)) throw new Error('种子哈希不合法');
+  if (!Buffer.isBuffer(buf) || !buf.length) throw new Error('种子内容为空');
+  await fsp.mkdir(TORRENT_DIR, { recursive: true });
+  await fsp.writeFile(torrentPath(h), buf);
+  cache.set(h, { ...decodeTorrent(buf), at: Date.now() });
+}
+
 function fromDisk(hash) {
   return readCachedTorrent(hash).then((buf) => {
     if (!buf) return null;

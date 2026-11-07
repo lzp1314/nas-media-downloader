@@ -6,13 +6,14 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { loadSettings, saveSettings, publicSettings, allowedRoots, DOWNLOAD_ROOT, CONFIG_DIR } from './settings.js';
-import { findRoot, resolveInside, humanSize } from './lib/util.js';
+import { findRoot, resolveInside, humanSize, httpRequest, DEFAULT_UA } from './lib/util.js';
+import { parseTorrentMeta } from './lib/bencode.js';
 import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
 import { sourceA } from './sources/a.js';
 import { bDetail, bSearch, bEnabled } from './sources/b.js';
-import { siteStatus } from './sources/config.js';
+import { siteStatus, requireA } from './sources/config.js';
 import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
-import { listTorrentFiles, readCachedTorrent } from './sources/torrent.js';
+import { listTorrentFiles, readCachedTorrent, saveTorrentFile } from './sources/torrent.js';
 import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
 import { createJob, getJob } from './lib/jobs.js';
 import { getHot } from './sources/hot.js';
@@ -357,7 +358,7 @@ on('POST', '/api/resolve', async (req, res) => {
     }),
   );
 
-  const { total, groups } = normalizeResources(packs);
+  const { total, groups, facets } = normalizeResources(packs);
   if (!total && !notes.length) notes.push('没有解析到可用资源，换个片源或稍后重试');
 
   sendJson(res, 200, {
@@ -367,6 +368,7 @@ on('POST', '/api/resolve', async (req, res) => {
     needLogin,
     total,
     groups,
+    facets,
     notes: [...new Set(notes)],
   });
 });
@@ -386,8 +388,69 @@ function safeName(s) {
   return String(s || '').replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/^\.+/, '_').slice(0, 180) || 'download';
 }
 
+/** 站点只给 .torrent 下载地址时：取回种子 → 还原磁力 → 落盘缓存，之后完全复用磁力链路 */
+const seedCache = new Map();
+async function loadSeed(rawUrl) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || ''));
+  } catch {
+    throw new Error('种子地址无效');
+  }
+  if (!/^https?:$/.test(url.protocol)) throw new Error('种子地址协议不支持');
+  // 只允许请求已配置片源的域名，避免这个入口被用来探测内网
+  const hosts = new Set();
+  try {
+    const a = requireA();
+    for (const base of [a.baseUrl, ...(a.mirrors || [])]) {
+      if (base) hosts.add(new URL(base).host);
+    }
+  } catch { /* 未配置片源时跳过白名单校验 */ }
+  if (hosts.size && !hosts.has(url.host)) throw new Error('种子地址不在已配置的片源域名内');
+
+  const hit = seedCache.get(url.toString());
+  if (hit && Date.now() - hit.at < 30 * 60 * 1000) {
+    await saveTorrentFile(hit.meta.hash, hit.buf); // 磁盘缓存可能被清过，命中时补一次
+    return hit.meta;
+  }
+  let buf = Buffer.alloc(0);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await httpRequest(url.toString(), {
+      binary: true,
+      headers: { Referer: `${url.origin}/`, 'User-Agent': DEFAULT_UA },
+      jar: sourceA.jar,
+      timeout: 20000,
+    });
+    buf = res.buffer || Buffer.alloc(0);
+    if (res.status === 200 && buf.length >= 20 && buf[0] === 0x64) break;
+    // 站点前置 JS Cookie 校验页：按页面脚本写入 Cookie 再取一次，服务端冷启动也能拿到种子
+    const m = buf.subarray(0, 4096).toString('utf8')
+      .match(/document\.cookie\s*=\s*"([^=]+)=([^;]+);/);
+    if (!m || attempt === 1) break;
+    sourceA.jar.set(url.toString(), m[1].trim(), m[2].trim());
+  }
+  if (buf.length < 20 || buf[0] !== 0x64) {
+    throw new Error('种子文件没取到（站点可能需要登录或会员）');
+  }
+  let meta;
+  try {
+    meta = parseTorrentMeta(buf);
+  } catch (err) {
+    throw new Error(`种子文件解析失败：${err.message}`);
+  }
+  await saveTorrentFile(meta.hash, buf);
+  if (seedCache.size > 200) seedCache.clear();
+  seedCache.set(url.toString(), { meta, buf, at: Date.now() });
+  return meta;
+}
+
 /** 真正干活的解析逻辑，放进后台任务里跑，返回结构保持不变 */
-async function resolveLinkPayload(link) {
+async function resolveLinkPayload(link, opts = {}) {
+  if (opts.torrentUrl) {
+    const seed = await loadSeed(opts.torrentUrl);
+    // 种子已落盘，listTorrentFiles 会直接命中缓存，选集/下载与普通磁力完全一致
+    return resolveLinkPayload({ kind: 'magnet', url: seed.magnet });
+  }
   if (link.kind === 'magnet') {
     const info = await listTorrentFiles(link.url);
     const files = info.files.map((f) => {
@@ -441,7 +504,11 @@ async function resolveLinkPayload(link) {
 
 /** 立刻回任务号，避免长请求被反代掐断 */
 on('POST', '/api/link/resolve', async (req, res) => {
-  const { text = '', url = '' } = await readBody(req);
+  const { text = '', url = '', torrentUrl = '' } = await readBody(req);
+  if (torrentUrl) {
+    const job = createJob(() => resolveLinkPayload(null, { torrentUrl }));
+    return sendJson(res, 200, { pending: true, jobId: job.id, kind: 'magnet' });
+  }
   const link = classifyLink(text || url);
   if (link.kind === 'unknown') {
     return sendJson(res, 400, { error: '没识别出磁力链接或网盘分享链接' });
@@ -461,7 +528,7 @@ on('GET', '/api/link/status', async (req, res, params, url) => {
 });
 
 on('POST', '/api/download', async (req, res) => {
-  const { magnet, dir, rid, ids = [] } = await readBody(req);
+  const { magnet, dir, rid, ids = [], torrentUrl = '' } = await readBody(req);
   const target = findRoot(allowedRoots(), dir || loadSettings().defaultDir);
   if (!target) return sendJson(res, 403, { error: '目标目录不在允许范围内' });
   await fsp.mkdir(target.abs, { recursive: true });
@@ -490,6 +557,10 @@ on('POST', '/api/download', async (req, res) => {
       for (const u of urls) u.out = safeName(u.out);
       r = await engine.add({ urls, dir: target.abs });
     }
+  } else if (torrentUrl) {
+    // 站点只给 .torrent：还原成磁力（带 tracker），两个引擎都走现成的整包下载分支
+    const seed = await loadSeed(torrentUrl);
+    r = await engine.add({ magnet: seed.magnet, dir: target.abs, hash: seed.hash });
   } else {
     if (!magnet || !/^magnet:\?/i.test(String(magnet))) {
       return sendJson(res, 400, { error: '仅支持磁力链接下载' });

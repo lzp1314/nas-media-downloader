@@ -63,6 +63,7 @@ export async function httpRequest(url, opts = {}) {
     jar,
     timeout = 25000,
     redirect = 'follow',
+    binary = false,
   } = opts;
 
   const finalHeaders = {
@@ -85,14 +86,16 @@ export async function httpRequest(url, opts = {}) {
       redirect,
       signal: controller.signal,
     });
-    const text = await res.text();
+    // 二进制读取（.torrent 等）：用 arrayBuffer 保留原始字节，不能走 text() 的 UTF-8 解码
+    const buffer = binary ? Buffer.from(await res.arrayBuffer()) : null;
+    const text = binary ? '' : await res.text();
     if (jar) {
       const setCookies = typeof res.headers.getSetCookie === 'function'
         ? res.headers.getSetCookie()
         : [res.headers.get('set-cookie')].filter(Boolean);
       jar.capture(url, setCookies);
     }
-    return { status: res.status, text, headers: res.headers, url: res.url || url };
+    return { status: res.status, text, buffer, headers: res.headers, url: res.url || url };
   } finally {
     clearTimeout(timer);
   }

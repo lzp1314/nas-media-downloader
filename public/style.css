@@ -686,6 +686,43 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .sheet-tools { margin: 10px 0 4px; }
 .res-acts { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
 
+/* ---------------- 资源类型 / 规格筛选 ---------------- */
+.res-filter {
+  margin: 10px 0 4px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+}
+.res-tabs { display: flex; gap: 8px; }
+.res-tab {
+  flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 9px 8px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface-2); color: var(--muted); font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: .16s;
+}
+.res-tab i { font-style: normal; font-size: 13px; font-weight: 500; opacity: .8; }
+.res-tab:hover { border-color: var(--line-2); color: var(--text); }
+.res-tab.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 4px 16px rgba(91, 140, 255, .22);
+}
+.res-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+.res-chip {
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 13.5px; cursor: pointer;
+}
+.res-chip i { font-style: normal; opacity: .75; }
+.res-chip:hover { border-color: var(--line-2); color: var(--text); }
+.res-chip.active { border-color: var(--accent); color: #a9c2ff; background: rgba(91, 140, 255, .12); }
+.res-meta .kind.seed { background: rgba(91, 140, 255, .16); color: #a9c2ff; }
+.qtitle .qcount { color: var(--muted); font-size: 13px; }
+.res-empty { padding: 22px 10px; text-align: center; color: var(--muted); font-size: 15px; }
+
+@media (max-width: 760px) {
+  .res-filter { padding: 8px; }
+  .res-tab { font-size: 13.5px; padding: 8px 5px; gap: 4px; }
+  .res-tab i { font-size: 12px; }
+  .res-chip { font-size: 12.5px; padding: 4px 9px; }
+}
+
 .link-dialog { width: min(820px, 100%); }
 .dialog-head { display: flex; align-items: center; gap: 10px; }
 .dialog-head h3 { flex: 1; }

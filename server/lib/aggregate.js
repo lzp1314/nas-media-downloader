@@ -19,6 +19,35 @@ const QUALITY_RULES = [
   { label: '480P', rank: 20, re: /(480p|360p|hdrip|cam|ts版|枪版)/i },
 ];
 
+/** 网盘类型代号 → 中文名；站点没给名字时按链接域名兜底 */
+const PAN_LABELS = {
+  baidu: '百度网盘', quark: '夸克网盘', xunlei: '迅雷网盘', '115': '115网盘',
+  ali: '阿里网盘', guangya: '光鸭云盘', yidong: '移动网盘', uc: 'UC网盘',
+  '123': '123云盘', lanzou: '蓝奏云', tianyi: '天翼云盘', other: '其他网盘',
+  direct: '直链', ed2k: '电驴',
+};
+
+const HOST_RULES = [
+  [/pan\.baidu|yun\.baidu/i, 'baidu'],
+  [/quark/i, 'quark'],
+  [/xunlei/i, 'xunlei'],
+  [/115\.com/i, '115'],
+  [/alipan|aliyundrive/i, 'ali'],
+  [/uc\.cn/i, 'uc'],
+  [/189\.cn/i, 'tianyi'],
+  [/139\.com/i, 'yidong'],
+  [/123(pan|684|865|912)/i, '123'],
+  [/lanzou/i, 'lanzou'],
+];
+
+export function inferPan(url, hint = '') {
+  const key = String(hint || '').toLowerCase();
+  if (PAN_LABELS[key]) return { key, label: PAN_LABELS[key] };
+  const s = String(url || '');
+  for (const [re, k] of HOST_RULES) if (re.test(s)) return { key: k, label: PAN_LABELS[k] };
+  return { key: 'other', label: '网盘' };
+}
+
 export function detectQuality(name, fallback = '') {
   const text = String(name || '');
   for (const q of QUALITY_RULES) {
@@ -95,18 +124,27 @@ export function normalizeResources(packs) {
     for (const g of pack.groups || []) {
       for (const it of g.items || []) {
         const url = it.magnet || it.url || it.down || '';
-        if (!url) continue;
-        const dedupe = it.hash || url;
+        // 站点把链接锁住时条目仍然要列出（名字/网盘/提取码），只是没有可点的链接
+        if (!url && !it.locked) continue;
+        const dedupe = it.hash || url || it.dedupeKey || `${pack.source}:${g.group}:${it.name}`;
         if (seen.has(dedupe)) continue;
         seen.add(dedupe);
         const isMagnet = /^magnet:/i.test(url);
         const q = detectQuality(`${it.name || ''} ${g.group || ''}`, '');
+        const kind = isMagnet ? 'magnet' : it.kind || (/^ed2k:/i.test(url) ? 'ed2k' : 'pan');
+        const pan = inferPan(url, it.panKey || (kind === 'pan' ? '' : kind));
+        const customName = String(it.typeName || it.panName || '').trim();
         flat.push({
           name: it.name || '未命名资源',
           size: it.size || '',
           url,
           magnet: isMagnet ? url : '',
-          kind: isMagnet ? 'magnet' : it.kind || (/^ed2k:/i.test(url) ? 'ed2k' : 'pan'),
+          kind,
+          panKey: pan.key,
+          panName: customName && customName !== '网盘' ? customName : pan.label,
+          locked: Boolean(it.locked),
+          code: String(it.code || '').trim(),
+          by: String(it.by || '').trim(),
           quality: q.label,
           rank: q.rank,
           source: pack.source,
@@ -120,6 +158,7 @@ export function normalizeResources(packs) {
     const am = a.magnet ? 1 : 0;
     const bm = b.magnet ? 1 : 0;
     if (am !== bm) return bm - am;
+    if (a.locked !== b.locked) return a.locked ? 1 : -1;
     return b.rank - a.rank;
   });
 

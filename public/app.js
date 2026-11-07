@@ -21,6 +21,7 @@ const state = {
   indexTimer: null,
   lastType: '',
   link: null,
+  sheetItem: null,
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -32,7 +33,8 @@ function friendly(msg) {
   return String(msg || '')
     .replace(/fetch failed|Failed to fetch/i, '下载引擎未就绪，请重启容器并查看日志')
     .replace(/ECONNREFUSED|UND_ERR_CONNECT_REFUSED/i, '下载引擎未启动')
-    .replace(/Load failed|NetworkError|network error/i, '无法连接服务，请确认容器正在运行');
+    .replace(/Load failed|NetworkError|network error/i, '无法连接服务，请确认容器正在运行')
+    .replace(/请求失败 504|Gateway Timeout/i, '等待超时，请重新点「解析」再试一次');
 }
 
 async function api(path, opts = {}) {
@@ -308,6 +310,7 @@ function closeSheet() {
 
 async function openSheet(item) {
   if (!item) return;
+  state.sheetItem = item;
   const seq = ++state.detailSeq;
   state.lastType = item.type || '';
   $('sTitle').textContent = item.title;
@@ -374,26 +377,34 @@ function renderResources(data, item) {
         <div class="qtitle"><b>${esc(g.label)}</b>${g.items.length} 个</div>
         ${g.items
           .map((it) => {
+            const panCls = `pan-${String(it.panKey || 'other').replace(/[^a-z0-9_-]/gi, '')}`;
             const kindTag = it.magnet
               ? ''
-              : `<span class="kind">${it.kind === 'ed2k' ? '电驴' : '网盘'}</span>`;
-            // 磁力可展开种子目录选集；网盘可展开分享里的文件列表
+              : `<span class="kind ${panCls}">${it.kind === 'ed2k' ? '电驴' : esc(it.panName || '网盘')}</span>`;
+            const extra = [
+              it.code ? `<span class="code">提取码 ${esc(it.code)}</span>` : '',
+              it.locked ? '<span class="lock">需会员取链接</span>' : '',
+            ].filter(Boolean).join('');
+            // 磁力可展开种子目录选集；网盘可展开分享里的文件列表；被站点锁住链接的只展示信息
             const acts = it.magnet
               ? `<div class="res-acts">
                   <button class="btn ghost sm" data-files="${esc(it.magnet)}" data-name="${esc(it.name)}">选集</button>
                   <button class="btn primary sm" data-dl="${esc(it.magnet)}" data-name="${esc(it.name)}">下载</button>
                 </div>`
-              : `<div class="res-acts">
+              : it.locked
+                ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
+                : `<div class="res-acts">
                   <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
                   <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
                 </div>`;
-            return `<div class="res">
+            return `<div class="res${it.locked ? ' locked' : ''}">
               <div class="res-main">
                 <div class="res-name">${esc(it.name)}</div>
                 <div class="res-meta">
                   <span class="sz">${esc(it.size || '大小未知')}</span>
                   <span class="src">${esc(it.sourceLabel)}</span>
                   ${kindTag}
+                  ${extra}
                 </div>
               </div>
               ${acts}
@@ -433,6 +444,8 @@ function renderResources(data, item) {
 
 /* ---------------- 链接解析 / 选集 ---------------- */
 function openLinkModal(text = '') {
+  stopLinkPoll();
+  $('linkGo').disabled = false;
   $('linkInput').value = text || '';
   $('linkModal').hidden = false;
   $('linkTools').hidden = true;
@@ -447,36 +460,81 @@ function openLinkModal(text = '') {
 }
 
 function closeLinkModal() {
+  stopLinkPoll();
+  $('linkGo').disabled = false;
   $('linkModal').hidden = true;
   state.link = null;
+}
+
+/* ---------------- 解析任务轮询 ---------------- */
+let linkPollTimer = null;
+
+function stopLinkPoll() {
+  if (linkPollTimer) {
+    clearTimeout(linkPollTimer);
+    linkPollTimer = null;
+  }
+}
+
+function showLinkResult(r) {
+  r.selected = new Set();
+  state.link = r;
+  $('linkStatus').innerHTML = `<b>${esc(r.title)}</b> · 共 ${(r.files || []).length} 个文件` +
+    (r.notes?.length ? `<br /><span class="sub">${r.notes.map(esc).join('<br />')}</span>` : '');
+  if (!r.files?.length) {
+    $('linkDownload').disabled = true;
+    return;
+  }
+  $('linkTools').hidden = false;
+  renderLinkFiles();
+}
+
+function failLink(msg) {
+  $('linkStatus').innerHTML = `<span class="err">${esc(friendly(msg))}</span>` +
+    '<br /><span class="sub">可以点「解析」重试；磁力若一直没做种者，请直接用资源列表里的「下载」整包下</span>';
+  $('linkDownload').disabled = true;
+  $('linkTools').hidden = true;
+  $('linkGo').disabled = false;
 }
 
 async function doLinkResolve() {
   const text = $('linkInput').value.trim();
   if (!text) return toast('先粘贴一条链接', true);
+  stopLinkPoll();
   const btn = $('linkGo');
   btn.disabled = true;
-  $('linkStatus').textContent = '正在读取里面的文件…磁力要等种子元数据，热门几秒、冷门可能几十秒';
+  $('linkStatus').textContent = '正在提交解析…';
   $('linkTools').hidden = true;
   $('linkList').innerHTML = '';
+  $('linkDownload').disabled = true;
   state.link = null;
   try {
     const r = await api('/api/link/resolve', { method: 'POST', body: JSON.stringify({ text }) });
-    r.selected = new Set();
-    state.link = r;
-    $('linkStatus').innerHTML = `<b>${esc(r.title)}</b> · 共 ${r.files.length} 个文件` +
-      (r.notes?.length ? `<br /><span class="sub">${r.notes.map(esc).join('<br />')}</span>` : '');
-    if (!r.files.length) {
-      $('linkDownload').disabled = true;
+    if (!r.pending) {
+      showLinkResult(r); // 兼容旧版后端
+      btn.disabled = false;
       return;
     }
-    $('linkTools').hidden = false;
-    renderLinkFiles();
+    const tick = async () => {
+      let st;
+      try {
+        st = await api(`/api/link/status?id=${encodeURIComponent(r.jobId)}`);
+      } catch (err) {
+        failLink(err.message);
+        return;
+      }
+      if (st.state === 'running') {
+        $('linkStatus').textContent = `正在读取里面的文件… 已等 ${st.elapsed} 秒（磁力要等做种者提供种子目录，冷门会久一点）`;
+        linkPollTimer = setTimeout(tick, 1200);
+        return;
+      }
+      btn.disabled = false;
+      if (st.state === 'error') failLink(st.error);
+      else showLinkResult(st.result);
+    };
+    await tick();
   } catch (err) {
-    $('linkStatus').textContent = friendly(err.message);
-    $('linkDownload').disabled = true;
-  } finally {
-    btn.disabled = false;
+    failLink(err.message);
   }
 }
 
@@ -1041,6 +1099,8 @@ async function loadSettingsView() {
 
 function renderIndexLine(idx) {
   if (!idx) return;
+  const syncBtn = $('btnSync');
+  if (syncBtn) syncBtn.disabled = Boolean(idx.running);
   const pill = $('idxPill');
   if (idx.configured === false) {
     pill.textContent = '未接入';
@@ -1075,6 +1135,9 @@ async function pollIndex() {
 }
 
 $('btnSync').addEventListener('click', async () => {
+  const btn = $('btnSync');
+  btn.disabled = true;
+  $('syncProgress').innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;margin:0 6px 0 0;vertical-align:-2px"></span>正在启动同步…';
   try {
     const r = await api('/api/index/sync', { method: 'POST', body: JSON.stringify({ pages: Number($('indexPages').value) || 40 }) });
     if (!r.started) {
@@ -1083,8 +1146,10 @@ $('btnSync').addEventListener('click', async () => {
       return;
     }
     toast('已开始同步片库');
+    renderIndexLine(r.status);
     pollIndex();
   } catch (err) {
+    btn.disabled = false;
     toast(err.message, true);
   }
 });
@@ -1143,10 +1208,16 @@ $('btnSrcALogin').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     await api('/api/a/login', { method: 'POST', body: JSON.stringify({ username, password, code, key }) });
-    toast('登录成功');
     $('srcAPass').value = '';
     $('srcACode').value = '';
     loadSettingsView();
+    // 登录后详情接口可能放开更多网盘链接：面板开着就立刻重拉，否则下次打开自然刷新
+    if (state.sheetItem && $('sheet').classList.contains('on')) {
+      openSheet(state.sheetItem);
+      toast('登录成功，已刷新资源列表');
+    } else {
+      toast('登录成功，重新打开资源面板即可刷新网盘链接');
+    }
   } catch (err) {
     toast(err.message, true);
     loadCaptcha();
@@ -1258,7 +1329,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.0';
+let currentVersion = '1.2.1';
 
 function setVersion(v) {
   if (!v) return;

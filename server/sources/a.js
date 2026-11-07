@@ -9,6 +9,53 @@ import { requireA } from './config.js';
  * - 磁力列表需登录（部分资源需会员），token 保存在设置里
  * - 站点地址全部来自 sites.json，代码里不写死
  */
+/**
+ * 解析详情接口里的网盘资源（与种子是两套数据）。
+ * 站点把网盘按类型分组放在 movies_online_seed，中文名在 movies_online_seed_type；
+ * 未登录/非会员时大部分条目的 link 为空，这些条目仍然列出并标记「需会员取链接」。
+ */
+export function parseWpGroups(d) {
+  const labels = {};
+  for (const t of Array.isArray(d?.movies_online_seed_type) ? d.movies_online_seed_type : []) {
+    if (t && t.value) labels[String(t.value)] = String(t.label || t.value);
+  }
+  const groups = [];
+  let total = 0;
+  let locked = 0;
+  let seq = 0;
+  for (const [key, arr] of Object.entries(d?.movies_online_seed || {})) {
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    const label = labels[key] || key;
+    const items = arr
+      .map((raw) => {
+        seq += 1;
+        const url = String(raw.link || raw.url || '').trim();
+        const isLocked = !url;
+        total += 1;
+        if (isLocked) locked += 1;
+        return {
+          group: label,
+          name: String(raw.seed_name || raw.name || '').trim(),
+          size: '',
+          magnet: '',
+          url,
+          panKey: key,
+          panName: label,
+          typeName: label,
+          kind: 'pan',
+          locked: isLocked,
+          code: String(raw.code || '').trim(),
+          by: String(raw.nickname || '').trim(),
+          time: String(raw.created_at || '').trim(),
+          dedupeKey: `a-wp-${raw.id ?? seq}`,
+        };
+      })
+      .filter((it) => it.name || it.url);
+    if (items.length) groups.push({ group: label, items });
+  }
+  return { groups, total, locked, needWpVip: Number(d?.need_wp_vip || 0) === 1 };
+}
+
 export class SourceA {
   constructor() {
     this.jar = new CookieJar();
@@ -164,6 +211,8 @@ export class SourceA {
     const ecca = d.ecca || {};
     for (const [name, arr] of Object.entries(ecca)) push(name, arr);
     push('种子 / 磁力', d.all_seeds);
+    const wp = parseWpGroups(d);
+    for (const g of wp.groups) groups.push(g);
 
     return {
       source: 'a',
@@ -183,6 +232,7 @@ export class SourceA {
       },
       seedCount: Number(d.znum || 0),
       needLogin: groups.length === 0 && Number(d.znum || 0) > 0,
+      wp: { total: wp.total, locked: wp.locked, needWpVip: wp.needWpVip },
       groups,
     };
   }

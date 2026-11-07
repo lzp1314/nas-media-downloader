@@ -195,3 +195,23 @@ export async function syncIndex({ pages } = {}) {
   }
   return { started: true, status: indexStatus() };
 }
+
+/**
+ * 后台启动同步并立刻回包。
+ * 旧实现把整轮爬取 await 在 HTTP 请求里，浏览器要等几分钟才收到响应，
+ * 进度轮询根本没机会启动，反代还会把这个长请求掐成 504。
+ */
+export function startIndexSync({ pages } = {}) {
+  if (status.running) return { started: false, status: indexStatus() };
+  if (!siteStatus().b.configured) {
+    return { started: false, status: { ...indexStatus(), error: '资源库 B 未接入，先在配置里填写片源地址' } };
+  }
+  syncIndex({ pages }).catch((err) => {
+    status.phase = 'error';
+    status.error = String(err?.message || err);
+    status.running = false;
+    status.current = '';
+    status.finishedAt = Date.now();
+  });
+  return { started: true, status: { ...indexStatus(), running: true, current: status.current || '准备中…' } };
+}

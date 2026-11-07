@@ -14,7 +14,8 @@ import { siteStatus } from './sources/config.js';
 import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
 import { listTorrentFiles, readCachedTorrent } from './sources/torrent.js';
 import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
-import { searchIndex, syncIndex, indexStatus, loadIndex } from './indexer.js';
+import { createJob, getJob } from './lib/jobs.js';
+import { searchIndex, startIndexSync, indexStatus, loadIndex } from './indexer.js';
 import { currentEngine, aria2Engine, qbitEngine } from './engine/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -337,6 +338,9 @@ on('POST', '/api/resolve', async (req, res) => {
               ? { groups: cachedGroups(v.id), meta: {}, seedCount: 0 }
               : await bDetail(v.id);
         if (d.needLogin) needLogin = true;
+        if (d.wp?.locked) {
+          notes.push(`${label}：共 ${d.wp.total} 条网盘资源，其中 ${d.wp.locked} 条的链接被站点锁住（需登录或会员），重新打开资源面板可刷新`);
+        }
         if (d.image && !image) image = d.image;
         for (const [k, val] of Object.entries(d.meta || {})) {
           if (val && !meta[k] && String(val).length < 40) meta[k] = val;
@@ -381,10 +385,8 @@ function safeName(s) {
   return String(s || '').replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/^\.+/, '_').slice(0, 180) || 'download';
 }
 
-/** 把一段链接解析成可勾选的文件列表：磁力读种子元数据，网盘读分享页 */
-on('POST', '/api/link/resolve', async (req, res) => {
-  const { text = '', url = '' } = await readBody(req);
-  const link = classifyLink(text || url);
+/** 真正干活的解析逻辑，放进后台任务里跑，返回结构保持不变 */
+async function resolveLinkPayload(link) {
   if (link.kind === 'magnet') {
     const info = await listTorrentFiles(link.url);
     const files = info.files.map((f) => {
@@ -401,14 +403,14 @@ on('POST', '/api/link/resolve', async (req, res) => {
       };
     });
     const rid = putLink('bt', { kind: 'magnet', hash: info.hash, name: info.name, magnet: link.url });
-    return sendJson(res, 200, {
+    return {
       ok: true,
       kind: 'magnet',
       rid,
       title: info.name,
       files,
       notes: [info.cached ? '种子目录已缓存，勾选后直接下载' : '已读到种子里的文件清单，勾选后只下选中的集数'],
-    });
+    };
   }
   if (link.kind === 'url') {
     const r = await resolveShare(link.url, link.passcode);
@@ -423,7 +425,7 @@ on('POST', '/api/link/resolve', async (req, res) => {
       hasDirect: /^https?:\/\//i.test(f.url || '') || ['quark', 'uc', 'direct'].includes(r.provider),
     }));
     const rid = putLink('pan', { kind: 'pan', share: r.share, name: r.title });
-    return sendJson(res, 200, {
+    return {
       ok: true,
       kind: 'pan',
       rid,
@@ -431,9 +433,30 @@ on('POST', '/api/link/resolve', async (req, res) => {
       files,
       needCookie: r.needCookie,
       notes: r.notes,
-    });
+    };
   }
-  return sendJson(res, 400, { error: '没识别出磁力链接或网盘分享链接' });
+  throw new Error('没识别出磁力链接或网盘分享链接');
+}
+
+/** 立刻回任务号，避免长请求被反代掐断 */
+on('POST', '/api/link/resolve', async (req, res) => {
+  const { text = '', url = '' } = await readBody(req);
+  const link = classifyLink(text || url);
+  if (link.kind === 'unknown') {
+    return sendJson(res, 400, { error: '没识别出磁力链接或网盘分享链接' });
+  }
+  const job = createJob(() => resolveLinkPayload(link));
+  sendJson(res, 200, { pending: true, jobId: job.id, kind: link.kind });
+});
+
+on('GET', '/api/link/status', async (req, res, params, url) => {
+  const job = getJob(url.searchParams.get('id'));
+  if (!job) return sendJson(res, 404, { error: '解析任务已过期，请重新点「解析」' });
+  if (job.state === 'running') {
+    return sendJson(res, 200, { state: 'running', elapsed: Math.round((Date.now() - job.startedAt) / 1000) });
+  }
+  if (job.state === 'error') return sendJson(res, 200, { state: 'error', error: cleanMsg(job.error) });
+  return sendJson(res, 200, { state: 'done', result: job.result });
 });
 
 on('POST', '/api/download', async (req, res) => {
@@ -643,7 +666,7 @@ on('GET', '/api/index/status', async (req, res) => sendJson(res, 200, indexStatu
 
 on('POST', '/api/index/sync', async (req, res) => {
   const { pages } = await readBody(req);
-  sendJson(res, 200, await syncIndex({ pages }));
+  sendJson(res, 200, startIndexSync({ pages }));
 });
 
 /* ------------------------------------------------------------------ */

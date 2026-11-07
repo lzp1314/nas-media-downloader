@@ -15,6 +15,7 @@ import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, tes
 import { listTorrentFiles, readCachedTorrent } from './sources/torrent.js';
 import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
 import { createJob, getJob } from './lib/jobs.js';
+import { getHot } from './sources/hot.js';
 import { searchIndex, startIndexSync, indexStatus, loadIndex } from './indexer.js';
 import { currentEngine, aria2Engine, qbitEngine } from './engine/index.js';
 
@@ -662,6 +663,12 @@ on('POST', '/api/a/logout', async (req, res) => {
 
 on('GET', '/api/a/me', async (req, res) => {
   sendJson(res, 200, { user: await sourceA.me() });
+});
+
+/** 首页热播推荐词；refresh=1 为手动刷新，其余情况走缓存后台更新 */
+on('GET', '/api/hot', async (req, res, params, url) => {
+  const refresh = url.searchParams.get('refresh') === '1';
+  sendJson(res, 200, await getHot({ refresh }));
 });
 
 on('GET', '/api/index/status', async (req, res) => sendJson(res, 200, indexStatus()));

@@ -104,6 +104,33 @@ export function searchIndex(keyword, limit = 60) {
   }));
 }
 
+/** 仅供测试：清掉内存索引，强制下次重新读文件 */
+export function _resetIndex() {
+  loaded = false;
+  items = [];
+  byUrl = new Map();
+}
+
+/** 按 movie / tv / anime 取最近收录的片名，供首页热播推荐用（点下去一定能搜到） */
+export function recentIndexTitlesByGroup(limitPerGroup = 5) {
+  loadIndex();
+  const groupOf = new Map(CATEGORIES.map((c) => [c.key, c.group]));
+  const out = { movie: [], tv: [], anime: [] };
+  const seen = new Set();
+  const maxScan = Math.min(items.length, 4000);
+  for (let i = items.length - 1, n = 0; i >= 0 && n < maxScan; i -= 1, n += 1) {
+    if (out.movie.length >= limitPerGroup && out.tv.length >= limitPerGroup && out.anime.length >= limitPerGroup) break;
+    const it = items[i];
+    const g = groupOf.get(it.c);
+    if (!g || !out[g] || out[g].length >= limitPerGroup) continue;
+    const t = String(it.t || '').trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out[g].push(t);
+  }
+  return out;
+}
+
 export async function syncIndex({ pages } = {}) {
   if (status.running) return { started: false, status };
   if (!siteStatus().b.configured) {

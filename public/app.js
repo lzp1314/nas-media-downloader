@@ -146,13 +146,65 @@ $('btnSearch').addEventListener('click', () => {
   doSearch();
 });
 
-document.querySelectorAll('#quick button').forEach((b) =>
-  b.addEventListener('click', () => {
-    kwEl.value = b.dataset.q;
-    $('btnClear').hidden = false;
-    doSearch();
-  }),
-);
+/* ---------------- 首页热播推荐 ---------------- */
+function fmtAgo(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return '刚刚更新';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
+function renderHot(data) {
+  const wrap = $('hotWrap');
+  const groups = (data?.groups || []).filter((g) => g.items && g.items.length);
+  if (!groups.length) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  $('hotTime').textContent = data.fallback
+    ? '暂时用收藏片单'
+    : `${fmtAgo(data.updatedAt)}${data.stale ? ' · 暂用上次' : ''}`;
+  $('hotGroups').innerHTML = groups
+    .map(
+      (g) => `<div class="hot-group" data-key="${esc(g.key)}">
+        <span class="hot-group-label">${esc(g.label)}</span>
+        <div class="hot-chips">${g.items
+          .map((q) => `<button type="button" data-q="${esc(q)}" title="搜索「${esc(q)}」">${esc(q)}</button>`)
+          .join('')}</div>
+      </div>`,
+    )
+    .join('');
+}
+
+async function loadHot(refresh = false) {
+  const btn = $('btnHotRefresh');
+  if (refresh) {
+    btn.disabled = true;
+    btn.textContent = '更新中…';
+  }
+  try {
+    const r = await api(`/api/hot${refresh ? '?refresh=1' : ''}`);
+    renderHot(r);
+    if (refresh) toast(r.stale ? '暂时没取到新数据，已保留上次的' : '已更新');
+  } catch {
+    $('hotWrap').hidden = true; // 推荐区是锦上添花，取不到就不显示，不影响搜索
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '刷新';
+  }
+}
+
+$('hotGroups').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-q]');
+  if (!b) return;
+  kwEl.value = b.dataset.q;
+  $('btnClear').hidden = false;
+  doSearch();
+});
+$('btnHotRefresh').addEventListener('click', () => loadHot(true));
 
 document.querySelectorAll('#scopeChips .chip').forEach((c) =>
   c.addEventListener('click', () => {
@@ -810,6 +862,48 @@ function statusText(s) {
   );
 }
 
+const DONE_STATUSES = new Set(['done', 'removed']);
+let doneExpanded = false;
+
+function taskCard(t) {
+  const eta = t.speed > 0 ? fmtEta((t.size - t.done) / t.speed) : '--';
+  const canPause = t.status === 'downloading' || t.status === 'queued';
+  return `<div class="task st-${esc(t.status)}">
+    <div class="top">
+      <span class="stat ${esc(t.status)}">${esc(statusText(t.status))}</span>
+      <div class="nm" title="${esc(t.name)}">${esc(t.name)}</div>
+      <div class="acts">
+        ${canPause ? `<button class="btn sm ghost" data-act="pause" data-id="${esc(t.id)}">暂停</button>` : ''}
+        ${t.status === 'paused' ? `<button class="btn sm ghost" data-act="resume" data-id="${esc(t.id)}">继续</button>` : ''}
+        <button class="btn sm danger" data-act="del" data-id="${esc(t.id)}">删除</button>
+      </div>
+    </div>
+    <div class="prog"><i style="width:${Math.min(100, t.progress || 0).toFixed(1)}%"></i></div>
+    <div class="foot">
+      <span class="em">${(t.progress || 0).toFixed(1)}%</span>
+      <span>${fmtSize(t.done)} / ${fmtSize(t.size)}</span>
+      <span>↓ ${fmtSpeed(t.speed)}</span>
+      <span>剩余 ${eta}</span>
+      <span>连接 ${t.peers || 0}</span>
+      <span style="margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%">${esc(t.dir || '')}</span>
+    </div>
+  </div>`;
+}
+
+function taskGroup(title, tone, cards, fold = false) {
+  if (!cards.length) return '';
+  const head = fold
+    ? `<button class="task-group-hd fold" data-toggle-done aria-expanded="${doneExpanded}">
+        <span class="gdot ${tone}"></span><b>${title}</b><span class="gcount">${cards.length}</span>
+        <span class="gfold">${doneExpanded ? '收起' : '展开'}<i>${doneExpanded ? '▴' : '▾'}</i></span>
+      </button>`
+    : `<div class="task-group-hd"><span class="gdot ${tone}"></span><b>${title}</b><span class="gcount">${cards.length}</span></div>`;
+  return `<div class="task-group ${tone}">
+    ${head}
+    <div class="task-group-body"${fold && !doneExpanded ? ' hidden' : ''}>${cards.join('')}</div>
+  </div>`;
+}
+
 async function loadTasks() {
   try {
     const data = await api('/api/tasks');
@@ -821,36 +915,22 @@ async function loadTasks() {
 
     $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>　活动 ${data.active} / 等待 ${data.waiting}`;
     $('taskEmpty').hidden = list.length > 0;
-    $('tasks').innerHTML = list
-      .map((t) => {
-        const eta = t.speed > 0 ? fmtEta((t.size - t.done) / t.speed) : '--';
-        const canPause = t.status === 'downloading' || t.status === 'queued';
-        return `<div class="task">
-          <div class="top">
-            <span class="stat ${esc(t.status)}">${esc(statusText(t.status))}</span>
-            <div class="nm" title="${esc(t.name)}">${esc(t.name)}</div>
-            <div class="acts">
-              ${canPause ? `<button class="btn sm ghost" data-act="pause" data-id="${esc(t.id)}">暂停</button>` : ''}
-              ${t.status === 'paused' ? `<button class="btn sm ghost" data-act="resume" data-id="${esc(t.id)}">继续</button>` : ''}
-              <button class="btn sm danger" data-act="del" data-id="${esc(t.id)}">删除</button>
-            </div>
-          </div>
-          <div class="prog"><i style="width:${Math.min(100, t.progress || 0).toFixed(1)}%"></i></div>
-          <div class="foot">
-            <span class="em">${(t.progress || 0).toFixed(1)}%</span>
-            <span>${fmtSize(t.done)} / ${fmtSize(t.size)}</span>
-            <span>↓ ${fmtSpeed(t.speed)}</span>
-            <span>剩余 ${eta}</span>
-            <span>连接 ${t.peers || 0}</span>
-            <span style="margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:40%">${esc(t.dir || '')}</span>
-          </div>
-        </div>`;
-      })
-      .join('');
+    const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map(taskCard);
+    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map(taskCard);
+    $('tasks').innerHTML =
+      taskGroup('进行中', 'live', running) + taskGroup('已完成', 'done', finished, true);
 
     $('tasks')
       .querySelectorAll('[data-act]')
       .forEach((btn) => btn.addEventListener('click', () => taskAction(btn.dataset.act, btn.dataset.id)));
+    $('tasks')
+      .querySelectorAll('[data-toggle-done]')
+      .forEach((btn) =>
+        btn.addEventListener('click', () => {
+          doneExpanded = !doneExpanded;
+          loadTasks();
+        }),
+      );
   } catch (err) {
     $('taskStat').textContent = `任务读取失败：${friendly(err.message)}`;
   }
@@ -1343,7 +1423,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.3';
+let currentVersion = '1.2.4';
 
 function setVersion(v) {
   if (!v) return;
@@ -1396,6 +1476,7 @@ $('btnCheckUpdate2').addEventListener('click', checkUpdate);
 
   loadDirs();
   loadTasks();
+  loadHot();
 
   const q = new URLSearchParams(location.search).get('q');
   if (q) {

@@ -567,6 +567,18 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .probe-step span:last-child { text-align: right; word-break: break-all; }
 .probe-hint { margin-top: 8px; color: var(--muted); line-height: 1.6; }
 
+/* 引擎连接失败时显示的诊断详情 */
+.diag {
+  margin-top: 10px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 10px; font-size: 14px; color: var(--muted); line-height: 1.75;
+}
+.diag[hidden] { display: none; }
+.diag-head { font-weight: 600; color: var(--text); margin-bottom: 5px; }
+.diag-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.diag-line span { flex: 0 0 66px; color: var(--dim); }
+.diag-line b { flex: 1; min-width: 0; font-weight: 400; word-break: break-all; }
+
 /* ---------------- 移动端 ---------------- */
 @media (max-width: 760px) {
   .bar { flex-wrap: wrap; gap: 10px; padding: 10px 14px; }

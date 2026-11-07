@@ -612,6 +612,8 @@ on('POST', '/api/settings', async (req, res) => {
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   saveSettings(clean);
+  // 改了 qBittorrent 地址或账号后丢掉旧会话，否则「保存并测试」可能还在用上一份 SID
+  if ('qbit' in clean || clean.engine === 'qbit') qbitEngine.reset();
   sendJson(res, 200, { ok: true, settings: publicSettings() });
 });
 

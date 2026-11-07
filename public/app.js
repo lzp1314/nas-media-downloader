@@ -1048,9 +1048,23 @@ async function loadSettingsView() {
     const ep = $('enginePill');
     ep.textContent = data.engine.ok ? `${data.engine.name} 就绪` : `${data.engine.name} 离线`;
     ep.className = `pill ${data.engine.ok ? 'ok' : 'bad'}`;
-    $('engineStatus').innerHTML = data.engine.ok
-      ? `版本 ${esc(data.engine.version || '—')}`
-      : `<span class="err">不可用：${esc(friendly(data.engine.error || ''))}</span>`;
+    const diag = $('engineDiag');
+    if (data.engine.ok) {
+      $('engineStatus').innerHTML = `版本 ${esc(data.engine.version || '—')}`;
+      diag.hidden = true;
+    } else {
+      $('engineStatus').innerHTML = `<span class="err">不可用：${esc(friendly(data.engine.error || ''))}</span>`;
+      const d = data.engine.detail;
+      if (d) {
+        diag.hidden = false;
+        diag.innerHTML = `<div class="diag-head">连接诊断</div>
+          <div class="diag-line"><span>请求地址</span><b>${esc(d.url || '—')}</b></div>
+          <div class="diag-line"><span>HTTP 状态</span><b>${esc(String(d.http ?? 0))}</b></div>
+          ${d.body ? `<div class="diag-line"><span>响应摘要</span><b>${esc(d.body)}</b></div>` : ''}`;
+      } else {
+        diag.hidden = true;
+      }
+    }
 
     // 片源接入状态
     const okA = Boolean(s.a?.configured);
@@ -1329,7 +1343,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.1';
+let currentVersion = '1.2.2';
 
 function setVersion(v) {
   if (!v) return;

@@ -400,24 +400,43 @@ function renderResources(data, item) {
     $('sMeta').innerHTML = metaBits.join('　·　');
   }
 
+  // 登录态文案：空结果和"有种子没明细"两处都要用，先算出来
+  const login = data.login || null;
+  const loginText = (() => {
+    const r = login?.reason || '';
+    if (r === 'none') return '站点要求登录后才下发种子明细，这里还没登录源 A 账号';
+    if (r === 'expired') return '源 A 登录状态已失效，重新登录即可恢复';
+    if (r === 'error') return `源 A 账号校验没通过${login.message ? `（${login.message}）` : ''}`;
+    if (r === 'ok') return `源 A 已登录（${login.vip ? '会员' : '普通用户'}），站点这次没下发，稍后重开本面板可再试`;
+    return '登录源 A 账号后重开本面板即可';
+  })();
+  const notes = (data.notes || []).filter(Boolean);
+
   if (!data.total) {
     const needLogin = data.needLogin;
+    const seedMiss = Boolean(data.seedExpect);
+    // 一条资源都没有时也要把「为什么没有」说清楚：
+    // 是站点要登录、还是要登录但没登录上、又或者只是这次没下发
     const tip = needLogin
       ? '这个片源要登录后才返回资源列表'
-      : (data.notes || []).join('<br />') || '没有解析到可用资源，换个片名或稍后再试';
+      : seedMiss
+        ? `站点有 ${data.seedExpect} 个种子，这次没有下发明细<br /><span class="res-empty-sub">${esc(loginText)}</span>`
+        : esc(notes.join('　')) || '没有解析到可用资源，换个片名或稍后再试';
+    const canLogin = needLogin || (seedMiss && login?.reason !== 'ok');
+    // 其余片源的报错照旧列出，别被种子提示盖掉
+    const rest = seedMiss ? notes.filter((n) => !/个种子/.test(n)) : [];
     $('sBody').innerHTML = `<div class="state">
       <div class="state-inner">
-        <div class="empty-ico">${needLogin ? '🔒' : '🕳'}</div>
+        <div class="empty-ico">${needLogin || seedMiss ? '🔒' : '🕳'}</div>
         <div class="state-msg" style="margin-bottom:14px">${tip}</div>
-        ${needLogin ? '<button class="btn primary sm" id="goLogin">去设置里登录</button>' : '<button class="btn ghost sm" id="retryResolve">重试</button>'}
+        ${rest.length ? `<div class="notebar" style="margin-bottom:12px;text-align:left">${rest.map(esc).join('<br />')}</div>` : ''}
+        ${canLogin
+          ? `<button class="btn primary sm" id="goLogin">${login?.reason === 'expired' ? '重新登录源 A' : '登录源 A'}</button>`
+          : '<button class="btn ghost sm" id="retryResolve">重试</button>'}
       </div>
     </div>`;
     const goLogin = $('goLogin');
-    if (goLogin)
-      goLogin.addEventListener('click', () => {
-        closeSheet();
-        switchView('settings');
-      });
+    if (goLogin) goLogin.addEventListener('click', () => openALogin(() => openSheet(item)));
     const retry = $('retryResolve');
     if (retry) retry.addEventListener('click', () => openSheet(item));
     return;
@@ -426,7 +445,8 @@ function renderResources(data, item) {
   // 种子和网盘是两套维度：种子看规格（WEB-4K/杜比视界…），网盘看网盘名（夸克/百度…）
   // 所以先按类型拆开，各自分桶、各自渲染，切换时只显示其中一块
   const rows = data.groups.flatMap((g) => (g.items || []).map((it) => ({ ...it })));
-  const isSeedRow = (it) => Boolean(it.magnet || it.torrentUrl || it.kind === 'torrent');
+  // kind=seed 表示站点只给了种子 id，磁力要另外换，也属于种子这一档
+  const isSeedRow = (it) => Boolean(it.magnet || it.torrentUrl || it.kind === 'torrent' || it.kind === 'seed' || it.seedId);
   const seedRows = rows.filter(isSeedRow);
   const panRows = rows.filter((it) => !isSeedRow(it));
 
@@ -459,11 +479,12 @@ function renderResources(data, item) {
     ].filter(Boolean).join('');
     const seedAttr = it.torrentUrl ? ` data-torrent="${esc(it.torrentUrl)}"` : '';
     const dlVal = esc(it.magnet || it.torrentUrl || '');
-    // 磁力或 .torrent 都能看目录选集；网盘展开分享列表；锁定条目只展示信息
+    const seedIdAttr = !it.magnet && !it.torrentUrl && it.seedId ? ` data-seedid="${esc(it.seedId)}"` : '';
+    // 磁力或 .torrent 都能看目录选集；只有种子 id 的先换磁力；网盘展开分享列表；锁定条目只展示信息
     const acts = isSeed
       ? `<div class="res-acts">
-          <button class="btn ghost sm" data-files="${dlVal}"${seedAttr} data-name="${esc(it.name)}">选集</button>
-          <button class="btn primary sm" data-dl="${dlVal}"${seedAttr} data-name="${esc(it.name)}">下载</button>
+          <button class="btn ghost sm" data-files="${dlVal}"${seedAttr}${seedIdAttr} data-name="${esc(it.name)}">选集</button>
+          <button class="btn primary sm" data-dl="${dlVal}"${seedAttr}${seedIdAttr} data-name="${esc(it.name)}">下载</button>
         </div>`
       : it.locked
         ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
@@ -486,9 +507,10 @@ function renderResources(data, item) {
     </div>`;
   };
 
-  const blockHtml = (kind, buckets, emptyTip) => {
+  const blockHtml = (kind, buckets, emptyTip, raw = false) => {
     if (!buckets.length) {
-      return `<div class="res-block" data-block="${kind}" hidden><div class="res-empty">${esc(emptyTip)}</div></div>`;
+      const tip = raw ? emptyTip : esc(emptyTip);
+      return `<div class="res-block" data-block="${kind}" hidden><div class="res-empty">${tip}</div></div>`;
     }
     const list = buckets
       .map(
@@ -501,10 +523,14 @@ function renderResources(data, item) {
     return `<div class="res-block" data-block="${kind}" hidden>${list}</div>`;
   };
 
+  const canSignIn = !seedRows.length && Boolean(data.seedExpect) && login?.reason !== 'ok';
   const seedTip = data.seedExpect
-    ? `站点有 ${data.seedExpect} 个种子，这次没有下发明细，原因见下方提示`
+    ? `<div>站点有 ${data.seedExpect} 个种子，这次没有下发明细</div>` +
+      `<div class="res-empty-sub">${esc(loginText)}</div>` +
+      (canSignIn
+        ? `<button class="btn primary sm" id="seedLogin" type="button">${login?.reason === 'expired' ? '重新登录源 A' : '登录源 A'}</button>`
+        : '<button class="btn ghost sm" id="seedRetry" type="button">再试一次</button>')
     : '这个片源没有种子资源';
-  const notes = (data.notes || []).filter(Boolean);
   $('sBody').innerHTML =
     `<div class="status" style="margin:10px 0 2px">${seedRows.length} 个种子 · ${panRows.length} 个网盘</div>` +
     `<div class="res-filter">
@@ -515,7 +541,7 @@ function renderResources(data, item) {
       <div class="res-chips" id="resChips"></div>
     </div>` +
     `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴链接解析 / 选集</button></div>` +
-    blockHtml('seed', seedBuckets, seedTip) +
+    blockHtml('seed', seedBuckets, seedTip, true) +
     blockHtml('pan', panBuckets, '这个片源没有网盘资源') +
     (notes.length ? `<div class="notebar" style="margin-top:12px">${notes.map(esc).join('<br />')}</div>` : '');
 
@@ -573,12 +599,55 @@ function renderResources(data, item) {
   });
   applyResFilter();
 
+  // 只有种子 id 的行：点的时候再去站点换磁力，换不到（未登录/无权限）就引导登录
+  const grabMagnet = async (btn) => {
+    const id = btn.dataset.seedid;
+    if (!id) return btn.dataset.dl || '';
+    if (btn.disabled) return '';
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '取磁力…';
+    try {
+      const r = await api('/api/a/magnet', { method: 'POST', body: JSON.stringify({ id }) });
+      return r.magnet || '';
+    } catch (e) {
+      if (/登录/.test(e.message)) {
+        toast('要登录源 A 才能取磁力', true);
+        openALogin(() => openSheet(item));
+      } else {
+        toast(e.message, true);
+      }
+      return '';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  };
+
   $('sBody').querySelectorAll('[data-dl]').forEach((btn) =>
-    btn.addEventListener('click', () => openDirPicker(btn.dataset.dl, btn.dataset.name, item.type, { torrentUrl: btn.dataset.torrent || '' })),
+    btn.addEventListener('click', async () => {
+      let link = btn.dataset.dl || '';
+      if (!link) {
+        link = await grabMagnet(btn);
+        if (!link) return;
+      }
+      openDirPicker(link, btn.dataset.name, item.type, { torrentUrl: btn.dataset.torrent || '' });
+    }),
   );
   $('sBody').querySelectorAll('[data-files]').forEach((btn) =>
-    btn.addEventListener('click', () => openLinkModal(btn.dataset.files, { torrentUrl: btn.dataset.torrent || '' })),
+    btn.addEventListener('click', async () => {
+      let link = btn.dataset.files || '';
+      if (!link) {
+        link = await grabMagnet(btn);
+        if (!link) return;
+      }
+      openLinkModal(link, { torrentUrl: btn.dataset.torrent || '' });
+    }),
   );
+  const seedLogin = $('seedLogin');
+  if (seedLogin) seedLogin.addEventListener('click', () => openALogin(() => openSheet(item)));
+  const seedRetry = $('seedRetry');
+  if (seedRetry) seedRetry.addEventListener('click', () => openSheet(item));
   const paste = $('sheetLinkPaste');
   if (paste) paste.addEventListener('click', () => openLinkModal(''));
   $('sBody').querySelectorAll('[data-copy]').forEach((btn) =>
@@ -591,6 +660,67 @@ function renderResources(data, item) {
       }
     }),
   );
+}
+
+/* ---------------- 源 A 登录（资源面板里直接登，不用跑去设置页） ---------------- */
+let aLoginBack = null;
+
+async function loadACaptcha() {
+  const img = $('aCaptchaImg');
+  if (!img) return;
+  img.removeAttribute('src');
+  img.dataset.key = '';
+  try {
+    const r = await api('/api/a/captcha');
+    img.src = r.img;
+    img.dataset.key = r.key || '';
+  } catch (e) {
+    toast(e.message || '验证码加载失败', true);
+  }
+}
+
+function openALogin(onDone) {
+  aLoginBack = typeof onDone === 'function' ? onDone : null;
+  $('aLoginUser').value = '';
+  $('aLoginPass').value = '';
+  $('aLoginCode').value = '';
+  $('aLoginNote').textContent = '';
+  $('aLoginModal').hidden = false;
+  loadACaptcha();
+  setTimeout(() => $('aLoginUser').focus(), 60);
+}
+
+function closeALogin() {
+  $('aLoginModal').hidden = true;
+  aLoginBack = null;
+}
+
+async function doALogin() {
+  const username = $('aLoginUser').value.trim();
+  const password = $('aLoginPass').value;
+  const code = $('aLoginCode').value.trim();
+  const key = $('aCaptchaImg').dataset.key || '';
+  if (!username || !password) return toast('请输入账号密码', true);
+  const btn = $('aLoginGo');
+  btn.disabled = true;
+  btn.textContent = '登录中…';
+  $('aLoginNote').textContent = '';
+  try {
+    const r = await api('/api/a/login', { method: 'POST', body: JSON.stringify({ username, password, code, key }) });
+    const who = r.user?.nickname || r.user?.username || username;
+    toast(`已登录 ${who}${r.user?.vip ? '（会员）' : ''}，正在刷新资源`);
+    const back = aLoginBack;
+    closeALogin();
+    loadSettingsView();
+    if (back) back();
+  } catch (e) {
+    $('aLoginNote').textContent = e.message || '登录失败';
+    loadACaptcha();
+    $('aLoginCode').value = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '登录';
+  }
 }
 
 /* ---------------- 链接解析 / 选集 ---------------- */
@@ -1262,10 +1392,10 @@ async function loadSettingsView() {
       }</small></div></div>`;
     $('siteStatus').innerHTML = line('资源库 A', okA) + line('资源库 B', okB);
 
-    // 资源库 A 账号
+    // 资源库 A 账号：先按有没有 token 渲染，再向站点确认真实有效性
     const ap = $('srcAPill');
-    ap.textContent = s.a.loggedIn ? '已登录' : okA ? '未登录' : '未接入';
-    ap.className = `pill ${s.a.loggedIn ? 'ok' : okA ? '' : 'bad'}`;
+    ap.textContent = s.a.loggedIn ? '校验中' : okA ? '未登录' : '未接入';
+    ap.className = `pill ${s.a.loggedIn ? '' : okA ? '' : 'bad'}`;
     $('srcANote').hidden = okA;
     if (!okA) $('srcANote').innerHTML = '还没有配置片源地址，填好 <code>config/sites.json</code> 后重启容器即可登录。';
     if (s.a.loggedIn) {
@@ -1273,6 +1403,26 @@ async function loadSettingsView() {
       $('srcAForm').hidden = true;
       const u = s.a.user || {};
       $('srcAUserLine').innerHTML = `当前账号 <b>${esc(u.nickname || s.a.username || '')}</b> ${u.vip ? '（会员）' : '（普通用户）'}`;
+      // token 存着不代表还有效：真去站点问一次，失效就提示重登
+      api('/api/a/status')
+        .then((st) => {
+          if (st.valid) {
+            ap.textContent = '已登录';
+            ap.className = 'pill ok';
+            $('srcAUserLine').innerHTML = `当前账号 <b>${esc(st.user?.nickname || s.a.username || '')}</b> ${st.vip ? '（会员）' : '（普通用户）'} · 登录有效`;
+          } else if (st.hasToken) {
+            ap.textContent = '登录失效';
+            ap.className = 'pill bad';
+            $('srcAUserLine').innerHTML = `原账号 <b>${esc(s.a.username || '')}</b> 的登录状态已失效，重新登录即可恢复种子明细`;
+            $('srcALogged').hidden = true;
+            $('srcAForm').hidden = !okA;
+            if (okA) loadCaptcha();
+          }
+        })
+        .catch(() => {
+          ap.textContent = '已登录';
+          ap.className = 'pill ok';
+        });
     } else {
       $('srcALogged').hidden = true;
       $('srcAForm').hidden = !okA;
@@ -1395,6 +1545,18 @@ async function loadCaptcha() {
 }
 $('btnCaptcha').addEventListener('click', loadCaptcha);
 $('captchaImg').addEventListener('click', loadCaptcha);
+
+$('aLoginClose').addEventListener('click', closeALogin);
+$('aLoginCancel').addEventListener('click', closeALogin);
+$('aLoginGo').addEventListener('click', doALogin);
+$('aCaptchaBtn').addEventListener('click', loadACaptcha);
+$('aCaptchaImg').addEventListener('click', loadACaptcha);
+$('aLoginPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doALogin();
+});
+$('aLoginCode').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doALogin();
+});
 
 $('btnSrcALogin').addEventListener('click', async () => {
   const username = $('srcAUser').value.trim();
@@ -1527,7 +1689,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.7';
+let currentVersion = '1.2.8';
 
 function setVersion(v) {
   if (!v) return;

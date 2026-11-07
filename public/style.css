@@ -720,6 +720,8 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .res-meta .kind.seed { background: rgba(91, 140, 255, .16); color: #a9c2ff; }
 .qtitle .qcount { color: var(--muted); font-size: 13px; }
 .res-empty { padding: 22px 10px; text-align: center; color: var(--muted); font-size: 15px; }
+.res-empty-sub { margin: 8px 0 14px; font-size: 13.5px; line-height: 1.6; opacity: .85; }
+.res-empty .btn { margin: 0 auto; }
 
 @media (max-width: 760px) {
   .res-filter { padding: 8px; }

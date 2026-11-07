@@ -3,7 +3,59 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import dns from 'node:dns';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * NAS 上很常见的一种「莫名 fetch failed」：
+ * 片源域名同时有 A 和 AAAA 记录，Node 默认按解析顺序（多数是 IPv6 优先）发起连接，
+ * 而某些宽带的 IPv6 到该站其实不通，于是连接直接失败、也不重试。
+ * 这里固定 IPv4 优先，并打开自动择栈（happy eyeballs）：IPv4 不通再退 IPv6，
+ * 只有 AAAA 记录的站点照样能连，行为比默认更稳。
+ */
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch { /* 老版本 Node 没有这个开关，忽略即可 */ }
+try {
+  net.setDefaultAutoSelectFamily(true);
+} catch { /* 同上 */ }
+
+/**
+ * 片源域名可以钉到指定 IP（sites.json 里的 hostMap），只影响本进程，不动系统 hosts。
+ * 用途：站点某个 IP 在本地线路被封 / DNS 被污染时，换一个能连的 IP 就恢复。
+ * 实现方式是在 DNS 解析这一层拦截，fetch、net 都会走到这里。
+ */
+function installHostOverrides() {
+  const fallback = dns.lookup.bind(dns);
+  let snap = { at: 0, map: {} };
+  const mapOf = () => {
+    if (Date.now() - snap.at < 5000) return snap.map;
+    let map = {};
+    try {
+      map = hostMap();
+    } catch { /* 配置读不到就退回系统解析 */ }
+    snap = { at: Date.now(), map };
+    return map;
+  };
+  const patched = function lookup(hostname, options, callback) {
+    let opts = options;
+    let cb = callback;
+    if (typeof opts === 'function') {
+      cb = opts;
+      opts = {};
+    }
+    const ip = mapOf()[String(hostname || '').toLowerCase()];
+    if (ip) {
+      const family = ip.includes(':') ? 6 : 4;
+      if (opts && opts.all) return process.nextTick(() => cb(null, [{ address: ip, family }]));
+      return process.nextTick(() => cb(null, ip, family));
+    }
+    return fallback(hostname, opts, cb);
+  };
+  dns.lookup = patched;
+}
+installHostOverrides();
 
 import { loadSettings, saveSettings, publicSettings, allowedRoots, DOWNLOAD_ROOT, CONFIG_DIR } from './settings.js';
 import { findRoot, resolveInside, humanSize, httpRequest, DEFAULT_UA } from './lib/util.js';
@@ -11,7 +63,7 @@ import { parseTorrentMeta } from './lib/bencode.js';
 import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
 import { sourceA } from './sources/a.js';
 import { bDetail, bSearch, bEnabled } from './sources/b.js';
-import { siteStatus, requireA } from './sources/config.js';
+import { siteStatus, requireA, hostMap } from './sources/config.js';
 import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
 import { listTorrentFiles, readCachedTorrent, saveTorrentFile } from './sources/torrent.js';
 import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
@@ -267,11 +319,14 @@ on('POST', '/api/search', async (req, res) => {
       // 实时搜索覆盖全站（中文关键词也有效），索引在站点抖动时兜底。
       const local = searchIndex(kw, 60);
       let live = [];
+      let liveErr = '';
       try {
         const r = await bSearch(kw);
         live = Array.isArray(r.items) ? r.items : [];
-      } catch {
-        // 实时搜索失败时静默降级到索引，只要还能出结果就不打扰用户
+      } catch (err) {
+        // 实时搜索失败时降级到本地索引；真一条都没有，就把失败原因带出来，
+        // 「暂时没找到」和「站点连不上」是两件事，不能让用户分不清
+        liveErr = cleanMsg(err.message);
       }
       const merged = new Map();
       for (const it of [...live, ...local]) {
@@ -280,7 +335,13 @@ on('POST', '/api/search', async (req, res) => {
         merged.set(key, it);
       }
       for (const it of merged.values()) raw.push({ source: 'b', item: it });
-      if (!merged.size) notes.push('资源库 B 暂时没找到这部片，可换个片名或在设置里同步片库');
+      if (!merged.size) {
+        notes.push(
+          liveErr
+            ? `资源库 B 这次没连上：${liveErr}`
+            : '资源库 B 暂时没找到这部片，可换个片名或在设置里同步片库',
+        );
+      }
     }
   }
 
@@ -330,6 +391,7 @@ on('POST', '/api/resolve', async (req, res) => {
   let image = '';
   // 站点自己声明的种子数量：用来判断「有数字但没明细」，避免用户以为是程序丢的
   const seedExpect = [];
+  let aStatus = null;
 
   const packs = await Promise.all(
     variants.slice(0, 6).map(async (v) => {
@@ -350,20 +412,14 @@ on('POST', '/api/resolve', async (req, res) => {
           if (val && !meta[k] && String(val).length < 40) meta[k] = val;
         }
         if (d.seedCount > 0) {
-          // 声明有种子却一条明细分不到：顺手确认登录态，好把原因说准（失效 / 未登录 / 权限）
+          // 声明有种子却一条明细分不到：顺手确认登录态，好把原因说准（未登录 / 已失效 / 权限）
           const gotSeed = (d.groups || []).some((g) =>
-            (g.items || []).some((x) => x.kind === 'magnet' || x.kind === 'torrent'),
+            (g.items || []).some((x) => x.kind === 'magnet' || x.kind === 'torrent' || x.kind === 'seed'),
           );
-          let login = '';
-          if (v.source === 'a' && !gotSeed) {
-            try {
-              const me = await sourceA.me();
-              login = me ? 'ok' : 'none';
-            } catch (e) {
-              login = /失效|登录/.test(e.message) ? 'expired' : 'unknown';
-            }
+          if (v.source === 'a' && !gotSeed && !aStatus) {
+            aStatus = await sourceA.status().catch(() => null);
           }
-          seedExpect.push({ label, count: d.seedCount, needLogin: Boolean(d.needLogin), login });
+          seedExpect.push({ label, count: d.seedCount, needLogin: Boolean(d.needLogin), login: aStatus });
         }
         return { source: v.source, label, groups: d.groups || [] };
       } catch (err) {
@@ -377,15 +433,18 @@ on('POST', '/api/resolve', async (req, res) => {
   const expectSeed = seedExpect.reduce((sum, x) => sum + x.count, 0);
   if (expectSeed > (facets.seed || 0)) {
     const who = seedExpect[0]?.label || '片源';
-    const login = seedExpect.find((x) => x.login)?.login || '';
-    const needSignIn = seedExpect.some((x) => x.needLogin);
+    const reason = aStatus?.reason || '';
     let hint;
-    if (login === 'expired') {
-      hint = `${who}：登录状态已失效，${expectSeed} 个种子拿不到明细。到设置里重新登录${who}账号后重开本面板即可`;
-    } else if (needSignIn || login === 'none' || login === 'unknown') {
-      hint = `${who}：站点有 ${expectSeed} 个种子，但只对登录账号下发明细，当前请求没拿到。到设置里登录${who}账号后重开本面板即可`;
+    if (reason === 'expired') {
+      hint = `${who}：登录状态已失效，站点不给 ${expectSeed} 个种子的明细。点右边「重新登录」重登${who}账号后会自动刷新`;
+    } else if (reason === 'none') {
+      hint = `${who}：站点要求登录后才下发种子明细，这里还没登录${who}账号。点右边「登录${who}」登录后会自动刷新`;
+    } else if (reason === 'error') {
+      hint = `${who}：账号校验没通过（${aStatus.message || '站点返回异常'}），站点不给 ${expectSeed} 个种子的明细。可以点右边「重新登录」再试`;
+    } else if (reason === 'ok') {
+      hint = `${who}：账号已登录（${aStatus.vip ? '会员' : '普通用户'}），但站点这次仍没下发 ${expectSeed} 个种子的明细，多为站点限流或权限限制，稍后重开本面板可再试`;
     } else {
-      hint = `${who}：站点有 ${expectSeed} 个种子且账号已登录，这次仍没有下发明细（多为会员权限或站点限流），稍后重开本面板可再试`;
+      hint = `${who}：站点有 ${expectSeed} 个种子但没有下发明细，登录${who}账号后重开本面板可再试`;
     }
     notes.push(hint);
   }
@@ -400,6 +459,7 @@ on('POST', '/api/resolve', async (req, res) => {
     groups,
     facets,
     seedExpect: expectSeed,
+    login: aStatus,
     notes: [...new Set(notes)],
   });
 });
@@ -765,6 +825,29 @@ on('POST', '/api/a/logout', async (req, res) => {
 
 on('GET', '/api/a/me', async (req, res) => {
   sendJson(res, 200, { user: await sourceA.me() });
+});
+
+/** 登录态自检：token 有不一定还有效，这里真去站点问一次（结果缓存 60 秒） */
+on('GET', '/api/a/status', async (req, res, params, url) => {
+  const fresh = url.searchParams.get('fresh') === '1';
+  const st = await sourceA.status({ fresh }).catch((e) => ({ hasToken: false, valid: false, reason: 'error', message: e.message }));
+  sendJson(res, 200, st);
+});
+
+/** 详情只给种子 id 时，按 id 单独换磁力（站点未登录会拒绝） */
+on('POST', '/api/a/magnet', async (req, res) => {
+  const { id } = await readBody(req);
+  if (!id) return sendJson(res, 400, { error: '缺少种子 id' });
+  try {
+    const magnet = await sourceA.magnet(id);
+    sendJson(res, 200, { magnet });
+  } catch (err) {
+    sendJson(res, 409, {
+      error: cleanMsg(err.message),
+      needLogin: Boolean(err.needLogin),
+      needVip: Boolean(err.needVip),
+    });
+  }
 });
 
 /** 首页热播推荐词；refresh=1 为手动刷新，其余情况走缓存后台更新 */

@@ -96,6 +96,26 @@ export async function httpRequest(url, opts = {}) {
       jar.capture(url, setCookies);
     }
     return { status: res.status, text, buffer, headers: res.headers, url: res.url || url };
+  } catch (err) {
+    // fetch 只会抛一句「fetch failed」，真正的原因藏在 cause 里（ENOTFOUND / EHOSTUNREACH / 证书过期…）。
+    // 这里把它带出来，面板上就能看到到底卡在哪一层，不用再去容器里猜。
+    if (err?.name === 'AbortError') {
+      const e = new Error(`请求超时（${Math.round(timeout / 1000)} 秒）`);
+      e.code = 'ETIMEDOUT';
+      throw e;
+    }
+    const cause = err?.cause || {};
+    // 多地址同时尝试（happy eyeballs）失败时抛的是 AggregateError，码在 errors[] 里
+    const codes = Array.isArray(cause.errors)
+      ? [...new Set(cause.errors.map((x) => String(x?.code || '').trim()).filter(Boolean))]
+      : [];
+    const code = String(cause.code || cause.errno || codes.join('/') || '').trim();
+    if (code) {
+      const e = new Error(`${err.message || 'fetch failed'}（${code}）`);
+      e.code = code;
+      throw e;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }

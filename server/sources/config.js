@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 
 /**
  * 片源接入配置。
@@ -9,6 +10,9 @@ import path from 'node:path';
  *   2) 环境变量：SITE_A_BASE / SITE_A_APP_ID / SITE_A_IDENTITY、SITE_B_SITE / SITE_B_API / SITE_B_SEARCH
  *
  * 两者都没配置时，对应片源自动置为「未接入」，搜索会跳过它而不是报错。
+ *
+ * 另有一个可选的 hostMap：把片源域名钉到指定 IP（只对本程序生效，相当于给片源单独配 hosts）。
+ * 站点某个 IP 在本地线路不通、或 DNS 被污染时，换一个能连的 IP 就能恢复，不用改系统。
  */
 
 const CONFIG_DIR = process.env.CONFIG_DIR || '/config';
@@ -17,6 +21,7 @@ const FILE = process.env.SITES_FILE || path.join(CONFIG_DIR, 'sites.json');
 const EMPTY = {
   sourceA: { baseUrl: '', mirrors: [], appId: '', identity: '' },
   sourceB: { siteUrl: '', apiUrl: '', searchUrl: '' },
+  hostMap: {},
 };
 
 const trimUrl = (v) => String(v || '').trim().replace(/\/+$/, '');
@@ -35,6 +40,19 @@ function envSites() {
   return out;
 }
 
+/** hostMap：只接受「域名 → IP 字面量」，写错的条目直接丢掉，绝不把域名指向域名 */
+function sanitizeHostMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw)) {
+    const host = String(k || '').trim().toLowerCase().replace(/\.$/, '');
+    const ip = String(v || '').trim();
+    if (!host || !net.isIP(ip)) continue;
+    out[host] = ip;
+  }
+  return out;
+}
+
 function normalize(raw = {}) {
   const a = { ...EMPTY.sourceA, ...(raw.sourceA || {}) };
   const b = { ...EMPTY.sourceB, ...(raw.sourceB || {}) };
@@ -50,6 +68,7 @@ function normalize(raw = {}) {
       apiUrl: trimUrl(b.apiUrl),
       searchUrl: trimUrl(b.searchUrl),
     },
+    hostMap: sanitizeHostMap(raw.hostMap),
   };
 }
 
@@ -78,6 +97,7 @@ export function loadSites() {
   cache = normalize({
     sourceA: { ...(raw.sourceA || {}), ...env.sourceA },
     sourceB: { ...(raw.sourceB || {}), ...env.sourceB },
+    hostMap: raw.hostMap,
   });
   cacheStamp = stamp;
   return cache;
@@ -90,6 +110,11 @@ export function siteStatus() {
     a: { configured: Boolean(s.sourceA.baseUrl && s.sourceA.appId) },
     b: { configured: Boolean(s.sourceB.siteUrl && s.sourceB.apiUrl) },
   };
+}
+
+/** 片源域名 → 指定 IP（可为空对象） */
+export function hostMap() {
+  return loadSites().hostMap || {};
 }
 
 function unconfigured(label) {

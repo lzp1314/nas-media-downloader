@@ -3,7 +3,8 @@
     "把本文件复制为同目录下的 sites.json，再按你自己掌握的信息填写。",
     "sites.json 已被 .gitignore 排除，不会进入仓库，也不会打进镜像。",
     "也可以改用环境变量：SITE_A_BASE / SITE_A_APP_ID / SITE_A_IDENTITY、SITE_B_SITE / SITE_B_API / SITE_B_SEARCH。",
-    "留空表示该片源未接入，界面会提示「未接入」，不会报错。"
+    "留空表示该片源未接入，界面会提示「未接入」，不会报错。",
+    "hostMap 是给片源单独用的 hosts：站点域名在本机线路连不上时，把域名钉到另一个可用 IP（只对本程序生效，不改系统），例如 {\"www.example.com\": \"203.0.113.10\"}。"
   ],
   "sourceA": {
     "baseUrl": "",
@@ -15,5 +16,6 @@
     "siteUrl": "",
     "apiUrl": "",
     "searchUrl": ""
-  }
+  },
+  "hostMap": {}
 }

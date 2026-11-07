@@ -80,7 +80,8 @@ export function parseSeedGroups(d, baseUrl = '') {
       const down = absolute(it.down);
       const name = String(it.zname || it.name || '').trim();
       const key = `a-seed-${it.id ?? `s${seq}`}`;
-      if (seen.has(key) || !name || (!magnet && !down)) continue;
+      // 条目只要有 id 就算数：站点现在常常只给种子 id，磁力要另外调 recordMagnetView 换
+      if (seen.has(key) || !name || (!magnet && !down && !it.id)) continue;
       seen.add(key);
       items.push({
         group,
@@ -89,7 +90,9 @@ export function parseSeedGroups(d, baseUrl = '') {
         magnet,
         down,
         torrentUrl: magnet ? '' : down,
-        kind: magnet ? 'magnet' : 'torrent',
+        seedId: it.id === undefined || it.id === null ? '' : String(it.id),
+        needVip: Number(it.need_vip || 0) === 1,
+        kind: magnet ? 'magnet' : down ? 'torrent' : 'seed',
         spec: String(it.zqxd || it.definition_group || group || '').trim(),
         quality: String(it.zqxd || '').trim(),
         hash: extractHash(magnet),
@@ -317,6 +320,58 @@ export class SourceA {
     return { img: json.data.img, key: json.data.key };
   }
 
+  /**
+   * 登录态自检：光看有没有 token 不算数，站点那边可能已经失效。
+   * 结果缓存 60 秒，避免每开一次面板就打一次账户接口。
+   */
+  async status({ fresh = false } = {}) {
+    const cached = this._status;
+    if (!fresh && cached && Date.now() - cached.at < 60000) return cached.value;
+    const hasToken = Boolean(this.token());
+    let value = { hasToken, valid: false, vip: false, user: null, reason: hasToken ? 'unknown' : 'none', message: '' };
+    if (hasToken) {
+      try {
+        const me = await this.me();
+        value = {
+          hasToken: true,
+          valid: Boolean(me),
+          vip: Boolean(me?.vip),
+          user: me,
+          reason: me ? 'ok' : 'unknown',
+          message: '',
+        };
+      } catch (err) {
+        const msg = String(err?.message || '');
+        value = {
+          hasToken: true,
+          valid: false,
+          vip: false,
+          user: null,
+          reason: /失效|过期|重新登录|10103/.test(msg) ? 'expired' : 'error',
+          message: msg.slice(0, 60),
+        };
+      }
+    }
+    this._status = { at: Date.now(), value };
+    return value;
+  }
+
+  /** 站点详情不给 zlink 时，按种子 id 单独换磁力；未登录会回「请登录后查看磁力」 */
+  async magnet(seedId) {
+    const id = String(seedId || '').trim();
+    if (!id) throw new Error('缺少种子 id');
+    const json = await this.request('recordMagnetView', { method: 'POST', body: { id } });
+    if (json.code !== 200) {
+      const err = new Error(json.message || '磁力获取失败');
+      err.needLogin = /登录/.test(String(json.message || ''));
+      err.needVip = /VIP|会员/i.test(String(json.message || ''));
+      throw err;
+    }
+    const link = String(json.data?.zlink || json.data?.href || '').trim();
+    if (!/^magnet:/i.test(link)) throw new Error('站点没有返回磁力链接');
+    return link;
+  }
+
   async login({ username, password, code, key }) {
     const json = await this.request('login', {
       method: 'POST',
@@ -327,6 +382,7 @@ export class SourceA {
     }
     const token = json.data.access_token;
     saveSettings({ a: { token, tokenAt: Date.now(), username } });
+    this._status = null;
     const me = await this.me().catch(() => null);
     return { token, user: me };
   }
@@ -348,6 +404,7 @@ export class SourceA {
 
   logout() {
     saveSettings({ a: { token: '', tokenAt: 0, user: null, username: '' } });
+    this._status = null;
     this.jar.clear();
   }
 }

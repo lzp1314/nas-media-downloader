@@ -1423,7 +1423,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.4';
+let currentVersion = '1.2.5';
 
 function setVersion(v) {
   if (!v) return;

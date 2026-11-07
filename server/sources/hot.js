@@ -10,12 +10,13 @@ import { requireB } from './config.js';
 /**
  * 首页「正在热播」推荐词：热播剧集 / 热播电影 / 热播动漫，每组若干个。
  *
- * 不用院线票房榜 —— 刚上映的院线片在资源站里基本没有源，点下去是空的。
- * 这里取的是「各平台正在播、资源站刚收录」的内容：
- *   1. 本地片库索引按 movie / tv / anime 分组取最近收录（零请求，100% 有资源）
- *   2. 某组不够时，实时抓站内对应分类首页补齐
- *   3. 可选：打开 usePublicChart 后，剧集组前面插入公开电视剧榜的片名
- *   4. 全都没有 → 隐藏推荐区，不塞过时的老片
+ * 设计原则（不接任何第三方热播榜，默认零第三方出网）：
+ *   1. 候选片名只有两个来源：程序内置的国产片单（可被配置覆盖）、使用者自己配置的数据源
+ *   2. 任何词都必须「确认有源」才会显示：出现在站内对应国产分类的最新列表里，
+ *      或出现在本机已同步的片库索引里。点下去不会是空结果
+ *   3. 片单只负责「优先显示哪些国产新片」，最终顺序为：片单词 → 站内最新 → 本机片库
+ *   4. 一律过国产中文片名闸：剔除外文、纪录片/综艺、画质与集数后缀
+ *   5. 全都取不到 → 隐藏推荐区，不塞过时老片
  *
  * 缓存 3 小时，缓存新鲜时零网络请求；过期先返回旧数据、后台静默刷新；
  * 支持手动刷新（30 秒最小间隔，避免高频请求站点）。
@@ -26,16 +27,32 @@ const HOT_CACHE = path.join(CONFIG_DIR, 'hot-cache.json');
 const DEFAULT_TTL_HOURS = 3;
 const MIN_REFRESH_GAP = 30 * 1000;
 const FETCH_TIMEOUT = 8000;
+const SITE_BUDGET_MS = 6000; // 每组抓分类页的总时限，避免首次启动 / 手动刷新卡住首页
 const PER_GROUP = 5;
 
+/** 只从国产相关的站内分类取片，不再碰美剧 / 韩剧 / 纪录片 / 高清等杂类 */
 const GROUPS = [
-  { key: 'tv', label: '热播剧集', cats: ['guochanju', 'hanju', 'oumeiju'] },
-  { key: 'movie', label: '热播电影', cats: ['dongzuopian', 'gaoqing', 'kehuanpian'] },
+  { key: 'tv', label: '热播剧集', cats: ['guochanju', 'gangju'] },
+  { key: 'movie', label: '热播电影', cats: ['juqingpian', 'dongzuopian', 'gaoqing', 'xijupian'] },
   { key: 'anime', label: '热播动漫', cats: ['donghuapian'] },
 ];
 
+/**
+ * 内置的国产片名候选。只是「优先显示哪些词」，不是资源内容；
+ * 每个词仍须在站内最新列表或本机片库里匹配到才显示。
+ * 可在 config/hot-sources.json 里用 seedTitles 整组覆盖。
+ */
+export const DEFAULT_SEED = {
+  tv: ['尚公主', '伟大的长征', '谷雨', '醉梦', '嫁金钗', '玉簟秋', '小城良方', '兰香如故', '多喜一家人', '风生水起'],
+  movie: ['空枪', '八仙', '飞驰人生3', '镖人', '欢迎来龙餐馆', '神探之痕迹', '给阿嬷的情书', '年会不能停2', '捕风追影', '浪浪山小妖怪'],
+  anime: ['凡人修仙传', '诛仙', '吞噬星空', '灵境行者', '仙逆', '无上神帝', '逆天至尊', '一念永恒', '狐妖小红娘', '大理寺日志'],
+};
+
 /** 榜单 / 分类页里常见的、不属于片名的修饰词 */
-const NOISE = /(?:上映首日|上映\d+天|更新至\s*\d*\s*集?|全集|完结|第\s*\d+\s*集|\d+\s*集|国语|粤语|普通话|中字|字幕|HD|BD|1080P|720P|2160P|4K|蓝光|抢先版|完整版|电视剧|电影版|票房|热搜|榜单|TOP\s*\d+)/gi;
+const NOISE = /(?:上映首日|上映\d+天|更新至\s*\d*\s*集?|全集|完结|第\s*\d+\s*集|\d+\s*集|国语|粤语|普通话|中字|字幕|HD|BD|1080P|1280P|720P|2160P|4K|8K|高清|超清|高码率|蓝光|WEB-?DL|HDR|H\.?26[45]|x\.?26[45]|HEVC|抢先版|完整版|修复版|收藏版|电视剧|电影版|票房|热搜|榜单|TOP\s*\d+)/gi;
+
+/** 不属于「国产影视剧 / 国漫」的内容类型 */
+const NOT_DOMESTIC = /(纪录片|纪实|解说|综艺|演唱会|访谈|花絮|预告|片花|幕后|特辑|MAD|AMV|OVA|剧场版|日语|中字|字幕组)/i;
 
 let cache = null;          // { groups: { tv, movie, anime }, updatedAt, sources }
 let cacheLoaded = false;
@@ -71,7 +88,7 @@ async function persist(c) {
   } catch { /* 只读环境不影响使用 */ }
 }
 
-/* ---------------- 片名清洗 ---------------- */
+/* ---------------- 片名清洗与国产过滤 ---------------- */
 
 /** 把分类页 / 榜单条目洗成可以直接塞进搜索框的片名 */
 export function cleanTitle(raw) {
@@ -88,6 +105,21 @@ export function cleanTitle(raw) {
   return s;
 }
 
+/**
+ * 国产中文片名总闸：洗掉画质/集数后缀后，必须是中文为主的影视/动漫片名。
+ * 剔除外文片、日文假名 / 韩文、纪录片 / 综艺 / 花絮等非影视内容。
+ */
+export function isDomesticTitle(raw) {
+  const s = cleanTitle(raw);
+  if (!s) return '';
+  if (/[\u3040-\u30ff\uac00-\ud7af]/.test(s)) return '';
+  if (NOT_DOMESTIC.test(s)) return '';
+  const han = (s.match(/[\u3400-\u9fff]/g) || []).length;
+  const chars = s.replace(/\s/g, '').length || 1;
+  if (han < 2 || han / chars < 0.6) return '';
+  return s;
+}
+
 function norm(q) {
   return String(q || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
@@ -99,20 +131,29 @@ function push(list, q, seen, per) {
   list.push(q);
 }
 
-/** 公开榜单结构解析（可选增强用） */
-export function pickTitles(json) {
-  if (!json || typeof json !== 'object') return [];
-  const rows = json?.data?.list || json?.data?.items || json?.data || json?.list || json?.items;
-  if (!Array.isArray(rows)) return [];
-  const keys = ['name', 'title', 'movieName', 'word', 'keyword', 'query'];
-  return rows
-    .map((r) => (typeof r === 'string' ? r : keys.map((k) => r?.[k]).find((v) => typeof v === 'string' && v.trim())))
-    .filter((v) => typeof v === 'string' && v.trim());
+/** 片单词必须在「已确认有源」的池子里能匹配到，否则不显示 */
+function confirmed(q, pool) {
+  const n = norm(q);
+  if (!n) return false;
+  return pool.some((p) => {
+    const m = norm(p);
+    return m && (m === n || m.includes(n) || n.includes(m));
+  });
+}
+
+/** 配置里的 seedTitles 按组整体覆盖内置片单；留空数组表示该组不用片单 */
+function seedOf(cfg) {
+  const out = {};
+  for (const g of GROUPS) {
+    const rows = cfg.seedTitles?.[g.key];
+    out[g.key] = Array.isArray(rows) ? rows : DEFAULT_SEED[g.key];
+  }
+  return out;
 }
 
 /* ---------------- 数据源 ---------------- */
 
-/** 站内分类首页：拿当前最新收录的片名（片库还没同步时也能用） */
+/** 站内国产分类首页：按更新时间倒序，本身就是「当前有资源」的国产片名 */
 async function fromSite(group, need) {
   const out = [];
   let siteUrl = '';
@@ -122,73 +163,67 @@ async function fromSite(group, need) {
     return out;
   }
   if (!siteUrl) return out;
+  const deadline = Date.now() + SITE_BUDGET_MS;
   for (const cat of group.cats) {
-    if (out.length >= need) break;
+    if (out.length >= need || Date.now() >= deadline) break;
     try {
       const url = `${siteUrl}/${cat}/`;
       const res = await httpRequest(url, {
         headers: { Referer: url, 'User-Agent': DEFAULT_UA },
-        timeout: FETCH_TIMEOUT,
+        timeout: Math.max(1500, Math.min(FETCH_TIMEOUT, deadline - Date.now())),
       });
       if (res.status !== 200) continue;
       for (const it of parseListPage(res.text, cat) || []) {
-        const q = cleanTitle(it.t);
+        const q = isDomesticTitle(it.t);
         if (q) out.push(q);
-        if (out.length >= need * 2) break;
+        if (out.length >= need) break;
       }
     } catch { /* 换下一个分类 */ }
   }
   return out;
 }
 
-/** 可选：公开电视剧榜。地址只能来自配置或环境变量，没填就完全不出网 */
-async function fromPublicTv(need) {
-  const url = process.env.HOT_TV_URL || loadConfig().publicChartUrl;
-  if (!/^https?:\/\//i.test(String(url || ''))) return [];
-  try {
-    const res = await fetch(String(url), {
-      headers: { 'User-Agent': DEFAULT_UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) return [];
-    return pickTitles(await res.json()).map(cleanTitle).filter(Boolean).slice(0, need);
-  } catch {
-    return [];
-  }
-}
-
 async function buildGroups() {
   const cfg = loadConfig();
   const per = Math.max(2, Math.min(8, Number(cfg.perGroup) || PER_GROUP));
-  const idx = recentIndexTitlesByGroup(per * 2) || {};
-  const out = {};
+  const seeds = seedOf(cfg);
+  const idx = recentIndexTitlesByGroup(per * 3) || {};
 
-  for (const g of GROUPS) {
-    const list = [];
-    const seen = new Set();
-    if (g.key === 'tv' && cfg.usePublicChart === true) {
-      for (const q of await fromPublicTv(per)) push(list, q, seen, per);
-    }
-    for (const raw of idx[g.key] || []) {
-      const q = cleanTitle(raw);
-      if (q) push(list, q, seen, per);
-      if (list.length >= per) break;
-    }
-    out[g.key] = { list, seen };
-  }
-
-  // 不足的组去站内分类首页补齐
-  const needy = GROUPS.filter((g) => out[g.key].list.length < per);
-  await Promise.all(
-    needy.map(async (g) => {
-      const extra = await fromSite(g, per - out[g.key].list.length + 2);
-      for (const q of extra) push(out[g.key].list, q, out[g.key].seen, per);
-    }),
-  );
+  // 一次抓齐三组的站内国产分类，既用于确认片单词有源，也用于补齐
+  const siteLists = {};
+  await Promise.all(GROUPS.map(async (g) => {
+    siteLists[g.key] = await fromSite(g, per * 3);
+  }));
 
   const groups = {};
-  for (const g of GROUPS) groups[g.key] = out[g.key].list;
-  return groups;
+  const sources = new Set(['本机片库']);
+  for (const g of GROUPS) {
+    const siteTitles = siteLists[g.key] || [];
+    const idxTitles = (idx[g.key] || []).map(isDomesticTitle).filter(Boolean);
+    const pool = [...new Set([...siteTitles, ...idxTitles])];
+    if (siteTitles.length) sources.add('站内国产分类');
+
+    const list = [];
+    const seen = new Set();
+    // 1) 片单词优先，但必须确认有源
+    for (const raw of seeds[g.key]) {
+      const q = isDomesticTitle(raw);
+      if (q && confirmed(q, pool)) push(list, q, seen, per);
+      if (list.length >= per) break;
+    }
+    // 2) 不足的用站内最新国产片补齐（本来就在站里，一定有源）
+    for (const q of siteTitles) {
+      push(list, q, seen, per);
+      if (list.length >= per) break;
+    }
+    // 3) 再不足用本机片库里对应国产分类的片名
+    for (const q of idxTitles) {
+      push(list, q, seen, per);
+      if (list.length >= per) break;
+    }
+    groups[g.key] = list;
+  }
+  return { groups, sources: [...sources] };
 }
 
 /* ---------------- 刷新与读取 ---------------- */
@@ -198,10 +233,10 @@ export function refreshNow() {
   if (Date.now() - lastAttempt < MIN_REFRESH_GAP) return Promise.resolve(null);
   lastAttempt = Date.now();
   inflight = (async () => {
-    const groups = await buildGroups();
+    const { groups, sources } = await buildGroups();
     const total = GROUPS.reduce((n, g) => n + (groups[g.key] || []).length, 0);
     if (!total) return null; // 全空不写缓存，让旧缓存 / 兜底生效
-    const next = { groups, updatedAt: Date.now(), sources: ['站内最新收录'] };
+    const next = { groups, updatedAt: Date.now(), sources };
     cache = next;
     await persist(next);
     return next;
@@ -224,16 +259,15 @@ function wrap(c, stale) {
   };
 }
 
-/** 全挂且没有缓存：只认配置里自填的片单，没有就返回空（前端隐藏推荐区） */
+/** 全挂且没有缓存：只认使用者自己填的收藏片单，没有就返回空（前端隐藏推荐区） */
 function fallback() {
-  const cfg = loadConfig();
-  const custom = cfg.fallbackTitles || {};
+  const custom = loadConfig().fallbackTitles || {};
   const groups = GROUPS.map((g) => {
     const rows = Array.isArray(custom) ? custom : custom[g.key];
     return {
       key: g.key,
       label: g.label,
-      items: (Array.isArray(rows) ? rows : []).map(cleanTitle).filter(Boolean).slice(0, 5),
+      items: (Array.isArray(rows) ? rows : []).map(isDomesticTitle).filter(Boolean).slice(0, 5),
     };
   }).filter((g) => g.items.length);
   return { ok: true, groups, updatedAt: 0, sources: [], stale: false, fallback: true };

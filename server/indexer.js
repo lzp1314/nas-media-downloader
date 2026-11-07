@@ -112,17 +112,24 @@ export function _resetIndex() {
 }
 
 /** 按 movie / tv / anime 取最近收录的片名，供首页热播推荐用（点下去一定能搜到） */
+/** 首页推荐只从国产相关分类取片；索引按分类顺序 + 页序追加，靠前的即各分类最新一页 */
+const HOT_CATS = {
+  tv: ['guochanju', 'gangju', 'taiwanju'],
+  movie: ['dongzuopian', 'xijupian', 'aiqingpian', 'kehuanpian', 'kongbupian', 'zhanzhengpian', 'juqingpian', 'gaoqing', 'weidianying'],
+  anime: ['donghuapian'],
+};
+
 export function recentIndexTitlesByGroup(limitPerGroup = 5) {
   loadIndex();
-  const groupOf = new Map(CATEGORIES.map((c) => [c.key, c.group]));
+  const catGroup = new Map();
+  for (const [g, cats] of Object.entries(HOT_CATS)) for (const c of cats) catGroup.set(c, g);
   const out = { movie: [], tv: [], anime: [] };
   const seen = new Set();
-  const maxScan = Math.min(items.length, 4000);
-  for (let i = items.length - 1, n = 0; i >= 0 && n < maxScan; i -= 1, n += 1) {
+  for (let i = 0; i < items.length; i += 1) {
     if (out.movie.length >= limitPerGroup && out.tv.length >= limitPerGroup && out.anime.length >= limitPerGroup) break;
     const it = items[i];
-    const g = groupOf.get(it.c);
-    if (!g || !out[g] || out[g].length >= limitPerGroup) continue;
+    const g = catGroup.get(it.c);
+    if (!g || out[g].length >= limitPerGroup) continue;
     const t = String(it.t || '').trim();
     if (!t || seen.has(t)) continue;
     seen.add(t);

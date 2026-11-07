@@ -23,6 +23,25 @@ export function safeExcerpt(raw, max = 120) {
     .slice(0, max);
 }
 
+/**
+ * 会话 Cookie 名字在不同版本都不一样：
+ * 5.1- 是 SID（可自定义），5.2+ 是 QBT_SID_<qB 自身 WebUI 端口>（如 QBT_SID_8088）。
+ * 端口映射 / 反代后从 URL 根本推不出来，所以只回显登录响应实际签发的那一个，不按名字匹配。
+ */
+export function sessionCookie(res) {
+  const h = res.headers;
+  let lines = typeof h.getSetCookie === 'function' ? h.getSetCookie() : [];
+  if (!lines.length) {
+    const merged = h.get('set-cookie');
+    lines = merged ? String(merged).split(/,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)/) : [];
+  }
+  const pairs = lines
+    .map((line) => String(line).split(';')[0].trim())
+    .filter((pair) => /^[A-Za-z_][A-Za-z0-9_]*=[^;\s]+/.test(pair));
+  // 反代可能自己也塞一个会话 Cookie，优先取 qB 的 SID，再退而求其次
+  return pairs.find((p) => /^(QBT_SID|SID)(_\d+)?=/i.test(p)) || pairs[0] || '';
+}
+
 /** 把 qBittorrent / 反代的各种失败翻译成人话 */
 export function diagnoseLogin(status, body) {
   const text = String(body || '');
@@ -34,13 +53,16 @@ export function diagnoseLogin(status, body) {
     return 'qBittorrent 拒绝了这次登录（403）。常见原因：WebUI 的「Host 头验证 / CSRF 保护」拦了反代域名，或同一 IP 失败次数过多被临时封禁（重启 qBittorrent 可清）';
   }
   if (status === 401 || /unauthorized/i.test(text)) {
-    return 'qBittorrent 返回 401：Host 头没通过校验。用裸 IP 访问、或反代域名没加进「服务器域名」白名单都会这样';
+    return 'qBittorrent 返回 401：5.2+ 版本账号或密码不对就是这个响应；也可能是 Host 头没通过校验（裸 IP 访问、反代域名没加进「服务器域名」白名单）';
   }
   if (low.startsWith('fails')) {
     return 'qBittorrent 说账号或密码不对；也可能是失败次数过多被临时封禁，重启 qBittorrent 后再试';
   }
   if (/^\s*(<!doctype|<html)/i.test(text) || /<body|<form/i.test(text)) {
     return '这个地址返回的是网页，不是 qBittorrent 接口。检查 IP 和端口是不是 WebUI 端口，以及反代有没有多加一层登录页';
+  }
+  if (status === 204 && !text.trim()) {
+    return '登录已通过（新版 204 空响应），但没拿到会话 Cookie：反代可能吞了 Set-Cookie，或 qBittorrent 开了免登录白名单';
   }
   if (!text.trim()) return `qBittorrent 返回了空响应（HTTP ${status}）`;
   return `qBittorrent 登录失败（HTTP ${status}）：${safeExcerpt(text, 60)}`;
@@ -57,7 +79,7 @@ function networkMessage(err) {
   return `连接失败：${safeExcerpt(s, 80)}`;
 }
 
-/** qBittorrent WebAPI v2 适配器 */
+/** qBittorrent WebAPI v2 适配器：同时兼容 5.1- 与 5.2+ 的登录契约 */
 class QbitEngine {
   constructor() {
     this.sid = '';
@@ -94,7 +116,8 @@ class QbitEngine {
   async login(force = false) {
     const { username, password } = this.cfg();
     if (!username || !password) throw new QbitError('未配置 qBittorrent 账号密码');
-    if (!force && this.sid && Date.now() - this.loggedAt < 1000 * 60 * 30) return this.sid;
+    // 免登录白名单模式不签发 Cookie，用登录时间缓存而不是 sid 判断
+    if (!force && this.loggedAt && Date.now() - this.loggedAt < 1000 * 60 * 30) return this.sid;
     const url = `${this.base()}/api/v2/auth/login`;
     const detail = { url, http: 0, body: '' };
     let res;
@@ -113,15 +136,14 @@ class QbitEngine {
     detail.http = res.status;
     const raw = await res.text().catch(() => '');
     detail.body = safeExcerpt(raw);
-    if (!res.ok || !raw.trim().toLowerCase().startsWith('ok')) {
-      throw new QbitError(diagnoseLogin(res.status, raw), detail);
-    }
-    const cookie = res.headers.getSetCookie?.() || [];
-    const sid = cookie.map((c) => c.split(';')[0]).find((c) => c.startsWith('SID='));
-    if (!sid) {
-      throw new QbitError('登录成功了，但没拿到会话 Cookie（SID）——多半是反代把 Set-Cookie 吞了', detail);
-    }
-    this.sid = sid;
+    const low = raw.trim().toLowerCase();
+    const looksHtml = /^\s*(<!doctype|<html)/i.test(raw) || /<form/i.test(raw);
+    const sid = sessionCookie(res);
+    // 5.1-：200 + "Ok."；5.2+：204 + 空正文；个别版本 / 免登录模式只发 Cookie。
+    // 跨版本唯一可靠判据是「服务端签发了会话」，而不是响应正文。
+    const ok = res.ok && !looksHtml && (low.startsWith('ok') || res.status === 204 || Boolean(sid));
+    if (!ok) throw new QbitError(diagnoseLogin(res.status, raw), detail);
+    this.sid = sid; // 免登录白名单时为空，后续请求就不带 Cookie
     this.loggedAt = Date.now();
     return sid;
   }
@@ -129,7 +151,8 @@ class QbitEngine {
   async api(pathname, { method = 'GET', body, retry = true } = {}) {
     const sid = await this.login();
     const url = `${this.base()}/api/v2${pathname}`;
-    const headers = { Cookie: sid, ...this.browserHeaders() };
+    const headers = { ...this.browserHeaders() };
+    if (sid) headers.Cookie = sid;
     if (body) headers['Content-Type'] = 'application/x-www-form-urlencoded';
     let res;
     try {
@@ -223,7 +246,8 @@ class QbitEngine {
     ]);
     const mapStatus = (t) => {
       if (t.state === 'error' || t.state === 'missingFiles') return 'error';
-      if (t.state === 'pausedDL' || t.state === 'pausedUP' || t.state === 'stoppedDL') return 'paused';
+      // 5.x 把 pausedXX 改名成 stoppedXX，两种都认
+      if (['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(t.state)) return 'paused';
       if (t.state === 'queuedDL' || t.state === 'queuedUP') return 'queued';
       if (t.state === 'uploading' || t.state === 'stalledUP') return 'done';
       if (t.progress >= 1) return 'done';
@@ -254,12 +278,27 @@ class QbitEngine {
     };
   }
 
+  /** qBittorrent 5.x 把 pause/resume 改名成 stop/start；按 404 自动回退，无需探测版本 */
+  async control(paths, hash) {
+    let lastErr;
+    for (const p of paths) {
+      try {
+        await this.api(p, { method: 'POST', body: encodeForm({ hashes: hash }) });
+        return;
+      } catch (err) {
+        if (!/HTTP 404\b/.test(String(err.message))) throw err;
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
   async pause(hash) {
-    await this.api('/torrents/pause', { method: 'POST', body: encodeForm({ hashes: hash }) });
+    await this.control(['/torrents/stop', '/torrents/pause'], hash);
   }
 
   async resume(hash) {
-    await this.api('/torrents/resume', { method: 'POST', body: encodeForm({ hashes: hash }) });
+    await this.control(['/torrents/start', '/torrents/resume'], hash);
   }
 
   async remove(hash, deleteFiles = false) {

@@ -1736,7 +1736,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.13';
+let currentVersion = '1.2.14';
 
 function setVersion(v) {
   if (!v) return;
@@ -1808,8 +1808,9 @@ function subCard(s) {
       ? `下次检查 ${fmtWhen(s.nextCheckAt)}`
       : '排队等首次检查';
   // 更新日标签：填了才有意义，没填就灰着说明「匀速轮询」
+  const at = String(s.updateTime || '');
   const dayTag = day
-    ? `<span class="day">${DOW_NAME[day]}更新</span>`
+    ? `<span class="day">${DOW_NAME[day]}${at ? ` ${esc(at)} 起` : '更新'}</span>`
     : '<span class="day off">未指定更新日</span>';
   const logs = (s.log || []).slice(-2).reverse();
   return `<div class="sub${off ? ' off' : ''}" data-id="${esc(s.id)}">
@@ -1833,7 +1834,7 @@ function subCard(s) {
 
 function renderSubs(d) {
   const stats = d?.stats || {};
-  const limit = stats.dailyLimit || 12;
+  const limit = stats.dailyLimit || 36;
   const used = stats.dailyUsed || 0;
   $('subStat').innerHTML = `共 ${subItems.length} 个 · 今日已检查 ${used}/${limit}`;
   $('subList').innerHTML = subItems.map(subCard).join('');
@@ -1872,6 +1873,7 @@ function openSubModal(sub) {
   $('subTo').value = sub?.endEpisode || '';
   $('subQuality').value = String(sub?.quality || 1080);
   $('subDay').value = String(sub?.updateDay || 0);
+  $('subTime').value = sub?.updateTime || '';
   $('subFormTip').textContent = '';
   fillSubDirs(sub?.dir);
   $('subModal').hidden = false;
@@ -1913,11 +1915,14 @@ $('btnDouban').addEventListener('click', async () => {
 });
 
 $('subSave').addEventListener('click', async () => {
+  const dayValue = Number($('subDay').value) || 0;
   const body = {
     title: $('subTitle').value.trim(),
     keyword: $('subKeyword').value.trim(),
     dir: $('subDir').value,
-    updateDay: Number($('subDay').value) || 0,
+    updateDay: dayValue,
+    // 没选更新日就存不下时刻，避免留下一个看不出作用的孤儿值
+    updateTime: dayValue ? ($('subTime').value || '') : '',
     totalEpisodes: Number($('subTotal').value) || 0,
     startEpisode: Math.max(1, Number($('subFrom').value) || 1),
     endEpisode: Number($('subTo').value) || 0,

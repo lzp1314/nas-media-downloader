@@ -19,8 +19,11 @@ import { routeFor } from '../engine/index.js';
 const running = new Set(); // 同一订阅不允许并发跑
 let daily = { day: '', count: 0 };
 
+/** 本地日期（不是 UTC）：按 UTC 算的话北京时间早上 8 点才翻篇，半夜会莫名其妙「到上限」 */
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 function bumpDaily() {
@@ -37,7 +40,7 @@ function dailyUsed() {
 
 export function subStats() {
   const s = loadSettings().subscribe || {};
-  return { running: [...running], dailyUsed: dailyUsed(), dailyLimit: s.dailyLimit || 12 };
+  return { running: [...running], dailyUsed: dailyUsed(), dailyLimit: s.dailyLimit || 36 };
 }
 
 /** 目标目录必须在允许的片库根目录内，避免被当成任意路径写入 */
@@ -73,25 +76,105 @@ export function weekdayOf(ts = Date.now()) {
   return new Date(ts).getDay() || 7;
 }
 
+/** 服务器本地时区当天 0 点（NAS 是 Asia/Shanghai，跨时区部署也按本机时间算） */
+function startOfDay(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** "20:30" → 时+分；不合法返回 null（= 没填） */
+export function parseClock(v) {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(v ?? '').trim());
+  return m ? { h: Number(m[1]), m: Number(m[2]) } : null;
+}
+
+/**
+ * 密查窗口长度。番剧 20:00 更新、压制组常常 22~24 点才传完，
+ * 6 小时足够覆盖；第二天同一时段再开一段，专门对付「隔天补传」。
+ */
+export const WINDOW_HOURS = 6;
+
+function dayNoon(ts) {
+  // 用正午判定星期，避免 0 点/23:59 落在边界上翻车
+  return weekdayOf(startOfDay(ts) + 12 * 3600 * 1000);
+}
+
+function windowSpan(sub) {
+  const day = Number(sub?.updateDay) || 0;
+  const clockTime = parseClock(sub?.updateTime);
+  if (day < 1 || day > 7 || !clockTime) return null;
+  return {
+    days: [day, (day % 7) + 1], // 更新日 + 次日
+    offset: (clockTime.h * 60 + clockTime.m) * 60 * 1000,
+    len: WINDOW_HOURS * 3600 * 1000,
+  };
+}
+
+/** 当前是否处于「更新日的更新时段」——只有填了具体时刻才算，否则交给老规则 */
+export function inUpdateWindow(sub, nowTs = Date.now()) {
+  const span = windowSpan(sub);
+  if (!span) return false;
+  const today0 = startOfDay(nowTs);
+  // 回看一天：23:50 起步的窗口会跨过零点延伸到现在
+  for (const back of [0, 1]) {
+    const base = today0 - back * 86400000;
+    if (!span.days.includes(dayNoon(base))) continue;
+    const s = base + span.offset;
+    if (nowTs >= s && nowTs < s + span.len) return true;
+  }
+  return false;
+}
+
+/** 下一个密查窗口的起点时间戳；没有可用窗口返回 0 */
+export function nextWindowStart(sub, nowTs = Date.now()) {
+  const span = windowSpan(sub);
+  if (!span) return 0;
+  const today0 = startOfDay(nowTs);
+  for (let i = 0; i < 9; i += 1) {
+    const base = today0 + i * 86400000;
+    if (!span.days.includes(dayNoon(base))) continue;
+    const s = base + span.offset;
+    if (s > nowTs) return s;
+  }
+  return 0;
+}
+
 /**
  * 下次检查间隔（分钟）。
  *
  * 周更番剧（比如每周六更新）如果按 60 分钟平铺轮询，一周要白跑 160 多次，
  * 而真正可能出新的只有更新日前后。所以：
  *   - 没填更新日 → 老样子匀速
- *   - 填了 → 更新日和次日（对付延迟上传）密查，其余时间降到 6 小时一次
- * 站点只看得到「更新日」这一个信号，比按日历定点更稳：晚发两小时也不会空等。
+ *   - 填了更新日、没填时刻 → 更新日和次日（对付延迟上传）整天密查，其余降到 6 小时一次
+ *   - 填了更新日 + 时刻 → 只在「那个点起 6 小时」和「次日同一段」密查，其余低频
+ * 站点只看得到「更新日」「更新时刻」这两个信号，比按日历定点更稳：晚发两小时也不会空等。
  */
 export function nextDelay(sub, cfg = {}, nowTs = Date.now()) {
   const base = Math.max(10, Number(cfg.intervalMinutes) || 60);
   const day = Number(sub?.updateDay) || 0;
   if (day < 1 || day > 7) return base;
-  const wd = weekdayOf(nowTs);
-  const dayAfter = (day % 7) + 1;
-  if (wd === day || wd === dayAfter) {
-    return Math.max(10, Math.min(base, Number(cfg.updateIntervalMinutes) || 30));
+
+  const updateInt = Math.max(10, Number(cfg.updateIntervalMinutes) || 30);
+  const offInt = Math.max(base, Number(cfg.offIntervalMinutes) || 360);
+
+  if (!parseClock(sub?.updateTime)) {
+    const wd = weekdayOf(nowTs);
+    const dayAfter = (day % 7) + 1;
+    if (wd === day || wd === dayAfter) return Math.max(10, Math.min(base, updateInt));
+    return offInt;
   }
-  return Math.max(base, Number(cfg.offIntervalMinutes) || 360);
+
+  if (inUpdateWindow(sub, nowTs)) return updateInt;
+
+  // 窗口外：如果下一个窗口比「低频间隔」来得更早，就精确睡到窗口开始，
+  // 否则 19:00 检查完设成 01:00，整段 20:00 的发布高峰就被跳过了。
+  const start = nextWindowStart(sub, nowTs);
+  if (start) {
+    const mins = Math.ceil((start - nowTs) / 60000);
+    if (mins > 0 && mins < offInt) return Math.max(1, mins);
+  }
+  return offInt;
 }
 
 /**
@@ -148,7 +231,7 @@ export async function runCheck(id, { force = false } = {}) {
     const sent = { ...sub.sent };
 
     for (const ep of batch) {
-      if (dailyUsed() >= (cfg.dailyLimit || 12)) {
+      if (dailyUsed() >= (cfg.dailyLimit || 36)) {
         notes.push(`今天已经检查 ${dailyUsed()} 次，达到上限，先停手`);
         break;
       }
@@ -246,14 +329,14 @@ let timer = null;
 function tick() {
   const cfg = loadSettings().subscribe || {};
   if (cfg.enabled === false) return;
-  if (dailyUsed() >= (cfg.dailyLimit || 12)) return;
+  if (dailyUsed() >= (cfg.dailyLimit || 36)) return;
   const due = listSubs().filter((s) => s.enabled && !running.has(s.id) && (s.nextCheckAt || 0) <= Date.now());
   if (!due.length) return;
   // 串行跑：同时打多个订阅等于自己给自己制造限流
   (async () => {
     for (const s of due) {
       if (running.has(s.id)) continue;
-      if (dailyUsed() >= (cfg.dailyLimit || 12)) break;
+      if (dailyUsed() >= (cfg.dailyLimit || 36)) break;
       try {
         await runCheck(s.id);
       } catch (err) {

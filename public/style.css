@@ -447,7 +447,11 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   background: rgba(255, 176, 32, .08); border: 1px solid rgba(255, 176, 32, .2);
   color: #ffcb6b; font-size: 14.5px; line-height: 1.75;
 }
-.subnote { flex: 0 0 auto; font-size: 13px; color: var(--dim); }
+/* 说明文字换行独占一行：不跟输入框抢宽度，否则「留空则按站点…」这种占位会被压成半截 */
+.subnote { flex: 1 1 100%; order: 10; font-size: 12.5px; color: var(--dim); line-height: 1.5; }
+/* 订阅弹窗字段多（剧名/搜索词/目录/更新日/更新时刻/集数/范围/清晰度），
+   手机横屏或小屏时高度会超过 88vh，允许滚动才不至于把「保存」挤出可视区 */
+#subModal .dialog { overflow-y: auto; }
 
 /* ---------------- 设置 ---------------- */
 .card {
@@ -507,11 +511,16 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   padding: 20px;
 }
 .dialog {
-  width: min(520px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  /* 用 width+max-width 而不是 min()：部分手机自带浏览器内核还不认 min()，
+     整条声明会失效，宽度塌成内容宽度——表现出来就是弹窗挤成一坨、看不清 */
+  width: 100%; max-width: 520px; max-height: 88vh; display: flex; flex-direction: column;
   background: var(--bg-2); border: 1px solid var(--line);
   border-radius: 16px; padding: 18px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, .6);
   animation: pop .18s ease;
+  /* 手机上字段一多就会超出 88vh：不裁剪就会把文字糊到遮罩上，
+     看起来像「整页黑掉」——必须自己滚 */
+  overflow-y: auto; overscroll-behavior: contain;
 }
 @keyframes pop { from { transform: translateY(10px) scale(.98); opacity: 0; } }
 .dialog h3 { margin: 0 0 4px; font-size: 18.5px; }
@@ -880,4 +889,32 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   .logo .name span { font-size: 17px; }
   .search input { font-size: 17.5px; }
   .search .go { font-size: 17px; }
+}
+
+/* ---------------- 手机上的弹窗（v1.2.14） ----------------
+   订阅弹窗有 8 行字段，390px 宽的屏幕上会顶破 88vh：
+   标题挤到屏幕外、底部按钮滚不到，内容溢到遮罩上又是深底深字，
+   看起来就是「整页黑掉，界面没出来」。窄屏统一改成贴底抽屉：
+   宽度吃满、按钮吸底、内容在弹窗内部滚动。 */
+@media (max-width: 600px) {
+  .modal { align-items: end; justify-items: center; padding: 0; }
+  .dialog {
+    width: 100%; max-width: 100%; max-height: 92vh;
+    border-radius: 18px 18px 0 0; border-bottom: 0;
+    padding: 16px 16px 14px;
+    padding: 16px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .dialog h3 { font-size: 17.5px; }
+  .tip { font-size: 14.5px; margin-bottom: 10px; }
+  /* 按钮吸底：内容再长也不用一路翻到底才找到「保存」 */
+  .dialog-foot {
+    position: sticky; bottom: -14px;
+    bottom: calc(-14px - env(safe-area-inset-bottom, 0px));
+    margin-top: 6px; padding: 10px 0 4px;
+    background: var(--bg-2); border-top: 1px solid var(--line);
+  }
+  .field { flex-wrap: wrap; gap: 7px; margin-bottom: 7px; }
+  .field label { flex: 0 0 62px; font-size: 14.5px; }
+  .field input, .field select { flex: 1 1 130px; min-width: 0; }
+  .field .w110, .field .w120, .field .w140 { flex: 1 1 90px; min-width: 0; }
 }

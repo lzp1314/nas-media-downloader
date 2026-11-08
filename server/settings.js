@@ -98,7 +98,9 @@ function defaults() {
       updateIntervalMinutes: 30,
       offIntervalMinutes: 360,
       maxPerRun: 3,
-      dailyLimit: 12,
+      // 每天最多检查多少次（所有订阅合计）。密查窗口内每 30 分钟一次，
+      // 单订阅「更新日 + 次日」两段窗口就能到 26 次，12 会在窗口后半段把调度掐死。
+      dailyLimit: 36,
     },
   };
 }
@@ -148,8 +150,10 @@ function normalize(s) {
   s.subscribe = {
     enabled: sub.enabled !== false,
     intervalMinutes: Math.min(720, Math.max(15, Number(sub.intervalMinutes) || 60)),
+    updateIntervalMinutes: Math.min(120, Math.max(10, Number(sub.updateIntervalMinutes) || 30)),
+    offIntervalMinutes: Math.min(1440, Math.max(30, Number(sub.offIntervalMinutes) || 360)),
     maxPerRun: Math.min(10, Math.max(1, Number(sub.maxPerRun) || 3)),
-    dailyLimit: Math.min(48, Math.max(1, Number(sub.dailyLimit) || 12)),
+    dailyLimit: Math.min(48, Math.max(1, Number(sub.dailyLimit) || 36)),
   };
   s.douban = { cookie: String(s.douban?.cookie || ''), uid: String(s.douban?.uid || '').replace(/\D/g, '') };
   return s;
@@ -166,10 +170,23 @@ export function ensureConfigDir() {
  * 迁完写回文件打上 v，之后用户手动选单引擎就不会再被改回来。
  */
 function migrate(raw) {
-  if (Number(raw.v) >= 2) return false;
-  raw.engine = 'auto';
-  raw.v = 2;
-  return true;
+  let changed = false;
+  // 注意写 !(x >= n) 而不是 x < n：老配置没有 v 字段，NaN < 2 是 false，
+  // 会把「无版本号」的配置当成已迁过而跳过。
+  if (!(Number(raw.v) >= 2)) {
+    raw.engine = 'auto';
+    raw.v = 2;
+    changed = true;
+  }
+  // v3：订阅每天检查上限 12 → 36。
+  // v2 时前端没有这个参数的入口，存下来的 12 一定是旧默认值，直接升不会覆盖用户选择。
+  // 不升的话：更新日密查 6 小时就是 12 次，窗口后半段会被自己的上限拦住。
+  if (!(Number(raw.v) >= 3)) {
+    if (raw.subscribe && typeof raw.subscribe === 'object') raw.subscribe.dailyLimit = 36;
+    raw.v = 3;
+    changed = true;
+  }
+  return changed;
 }
 
 function writeSettings(obj) {

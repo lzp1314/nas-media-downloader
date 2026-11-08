@@ -50,6 +50,12 @@ function str(v, max = 200) {
   return String(v ?? '').slice(0, max);
 }
 
+/** 只接受 HH:mm，其余一律当「没填」——宁可退回全天密查，也不让脏值把调度搞乱 */
+function clock(v) {
+  const s = str(v, 5).trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : '';
+}
+
 /** 把外部传入的对象收成固定形状，脏数据一律丢弃而不是抛错 */
 export function normalize(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -88,6 +94,8 @@ export function normalize(raw) {
     quality: [2160, 1080, 720, 480].includes(Number(raw.quality)) ? Number(raw.quality) : 1080,
     // 更新日：0=不指定（匀速轮询），1~7=周一~周日。周更剧填上能省掉大量空跑请求
     updateDay: Math.min(7, Math.max(0, Math.floor(num(raw.updateDay)))),
+    // 更新时刻：填了才按「这个点之后才开始密查」，留空则更新日整天密查（老行为）
+    updateTime: clock(raw.updateTime),
     enabled: raw.enabled !== false,
     createdAt: num(raw.createdAt, Date.now()),
     lastCheckAt: num(raw.lastCheckAt),
@@ -123,7 +131,7 @@ export function addSub(input) {
 }
 
 /** 只允许改这几项，其余（sent/log/统计）由程序维护，避免前端误写 */
-const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDay', 'enabled'];
+const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDay', 'updateTime', 'enabled'];
 
 export function updateSub(id, patch) {
   const db = loadSubs();

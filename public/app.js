@@ -1105,13 +1105,14 @@ function statusText(s) {
 const DONE_STATUSES = new Set(['done', 'removed']);
 let doneExpanded = false;
 
-function taskCard(t, activeEngine) {
+function taskCard(t) {
   const eta = t.speed > 0 ? fmtEta((t.size - t.done) / t.speed) : '--';
   const canPause = t.status === 'downloading' || t.status === 'queued';
-  // 固定单引擎时，另一个引擎里还在跑的任务单独标一下，免得以为不是自己的；
-  // 自动分流档下两个引擎都在用，标了反而全是标签，就不标了
-  const other = t.engine && activeEngine && activeEngine !== 'auto' && t.engine !== activeEngine;
-  const engTag = other ? `<span class="eng" title="这个任务在 ${esc(t.engine)} 里">${t.engine === 'qbit' ? 'qB' : 'aria2'}</span>` : '';
+  // 每个任务都挂上它来自哪个引擎。合并显示后两边任务混在一个列表里，
+  // 不标出来就分不清这个种子是 aria2 在跑还是 qB 在跑，出问题也没法判断该查谁。
+  const engKey = t.engine === 'qbit' ? 'qb' : t.engine === 'aria2' ? 'aria2' : '';
+  const engName = t.engine === 'qbit' ? 'qBittorrent' : t.engine === 'aria2' ? 'aria2' : '';
+  const engTag = engKey ? `<span class="eng ${engKey}" title="由 ${engName} 下载">${esc(engName)}</span>` : '';
   const eng = esc(t.engine || '');
   return `<div class="task st-${esc(t.status)}">
     <div class="top">
@@ -1162,10 +1163,14 @@ async function loadTasks() {
     const badTip = bad.length
       ? `　<span class="err">${bad.map((e) => `${e.engine === 'qbit' ? 'qB' : 'aria2'} 未连接`).join('、')}</span>`
       : '';
-    $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>　活动 ${data.active} / 等待 ${data.waiting}${badTip}`;
+    // 两个引擎都在跑时把速度拆开，只看总数分不清快慢是谁的功劳
+    const sp = data.speeds || {};
+    const busy = Object.entries(sp).filter(([, v]) => v > 0);
+    const split = busy.length > 1 ? ` <span class="sub">（${busy.map(([k, v]) => `${k === 'qbit' ? 'qB' : k} ${fmtSpeed(v)}`).join(' · ')}）</span>` : '';
+    $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>${split}　活动 ${data.active} / 等待 ${data.waiting}${badTip}`;
     $('taskEmpty').hidden = list.length > 0;
-    const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map((t) => taskCard(t, data.engine));
-    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map((t) => taskCard(t, data.engine));
+    const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map((t) => taskCard(t));
+    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map((t) => taskCard(t));
     $('tasks').innerHTML =
       taskGroup('进行中', 'live', running) + taskGroup('已完成', 'done', finished, true);
 
@@ -1730,7 +1735,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.11';
+let currentVersion = '1.2.12';
 
 function setVersion(v) {
   if (!v) return;

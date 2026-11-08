@@ -100,6 +100,42 @@ function networkMessage(err) {
   return `连接失败：${safeExcerpt(s, 80)}`;
 }
 
+/**
+ * qBittorrent 的 /torrents/info 单条记录 → 本项目的任务结构。
+ * 抽成纯函数是为了能脱离网络单测（尤其是「连接数」这种容易取错字段的地方）。
+ */
+export function mapTorrent(t) {
+  let status;
+  if (t.state === 'error' || t.state === 'missingFiles') status = 'error';
+  // 5.x 把 pausedXX 改名成 stoppedXX，两种都认
+  else if (['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(t.state)) status = 'paused';
+  else if (t.state === 'queuedDL' || t.state === 'queuedUP') status = 'queued';
+  else if (t.state === 'uploading' || t.state === 'stalledUP') status = 'done';
+  else if (t.progress >= 1) status = 'done';
+  else status = 'downloading';
+
+  const leechers = t.num_leechs || 0;
+  const seeds = t.num_seeds || 0;
+  return {
+    id: t.hash,
+    engine: 'qbit',
+    name: t.name,
+    dir: t.save_path || '',
+    size: t.size || 0,
+    done: t.completed || 0,
+    progress: (t.progress || 0) * 100,
+    speed: t.dlspeed || 0,
+    uploadSpeed: t.upspeed || 0,
+    // num_leechs 只算「同样在下载的」，做种者不算在内。界面「连接」要的是总连接数，
+    // 只取 num_leechs 会出现「连接 0 但还有下载速度」这种自相矛盾的显示。
+    peers: leechers + seeds,
+    leechers,
+    seeders: seeds,
+    status,
+    error: t.state === 'error' ? '下载出错' : t.state === 'missingFiles' ? '文件缺失（可能被移动或删除）' : '',
+  };
+}
+
 /** qBittorrent WebAPI v2 适配器：同时兼容 5.1- 与 5.2+ 的登录契约 */
 class QbitEngine {
   constructor() {
@@ -315,30 +351,7 @@ class QbitEngine {
       this.api('/torrents/info'),
       this.api('/transfer/info'),
     ]);
-    const mapStatus = (t) => {
-      if (t.state === 'error' || t.state === 'missingFiles') return 'error';
-      // 5.x 把 pausedXX 改名成 stoppedXX，两种都认
-      if (['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(t.state)) return 'paused';
-      if (t.state === 'queuedDL' || t.state === 'queuedUP') return 'queued';
-      if (t.state === 'uploading' || t.state === 'stalledUP') return 'done';
-      if (t.progress >= 1) return 'done';
-      return 'downloading';
-    };
-    const tasks = (Array.isArray(torrents) ? torrents : []).map((t) => ({
-      id: t.hash,
-      engine: 'qbit',
-      name: t.name,
-      dir: t.save_path || '',
-      size: t.size || 0,
-      done: t.completed || 0,
-      progress: (t.progress || 0) * 100,
-      speed: t.dlspeed || 0,
-      uploadSpeed: t.upspeed || 0,
-      peers: t.num_leechs || 0,
-      seeders: t.num_seeds || 0,
-      status: mapStatus(t),
-      error: t.state === 'error' ? '下载出错' : '',
-    }));
+    const tasks = (Array.isArray(torrents) ? torrents : []).map(mapTorrent);
     return {
       tasks,
       globalSpeed: transfer?.dl_info_speed || 0,

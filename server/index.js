@@ -700,7 +700,7 @@ on('GET', '/api/tasks', async (req, res) => {
     return Date.now() >= (engineDownAt[e.name] || 0);
   });
   const settled = await Promise.allSettled(engines.map((e) => e.list()));
-  const data = { engine: active, tasks: [], globalSpeed: 0, globalUpload: 0, active: 0, waiting: 0, stopped: 0, errors: [] };
+  const data = { engine: active, tasks: [], globalSpeed: 0, globalUpload: 0, speeds: {}, active: 0, waiting: 0, stopped: 0, errors: [] };
   settled.forEach((r, i) => {
     const e = engines[i];
     if (r.status === 'rejected') {
@@ -711,6 +711,8 @@ on('GET', '/api/tasks', async (req, res) => {
     data.tasks.push(...r.value.tasks);
     data.globalSpeed += r.value.globalSpeed || 0;
     data.globalUpload += r.value.globalUpload || 0;
+    // 分开记一份，前端要把「总速度」拆成各引擎的速度
+    data.speeds[e.name] = r.value.globalSpeed || 0;
   });
   data.active = data.tasks.filter((t) => t.status === 'downloading').length;
   data.waiting = data.tasks.filter((t) => t.status === 'queued').length;

@@ -390,9 +390,12 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .task .acts { display: flex; gap: 6px; flex: 0 0 auto; }
 /* 非当前引擎的任务标记（切到 qB 后仍在 aria2 里跑的那些） */
 .task .eng {
-  flex: 0 0 auto; font-size: 12.5px; line-height: 1.5; padding: 1px 6px;
-  border-radius: 5px; background: rgba(130, 105, 255, .18); color: #c3b3ff;
+  flex: 0 0 auto; font-size: 12px; line-height: 1.5; padding: 1px 6px;
+  border-radius: 5px; white-space: nowrap;
 }
+/* qB 用主题紫，aria2 用中性灰：一眼看出这个种子归谁下，又不至于整屏都是彩色标签 */
+.task .eng.qb { background: rgba(130, 105, 255, .18); color: #c3b3ff; }
+.task .eng.aria2 { background: rgba(140, 150, 170, .14); color: var(--muted); }
 .prog { height: 5px; border-radius: 999px; background: var(--surface-3); margin: 10px 0 8px; overflow: hidden; }
 .prog i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s ease; }
 .task .foot { display: flex; gap: 14px; font-size: 14.5px; color: var(--muted); flex-wrap: wrap; }

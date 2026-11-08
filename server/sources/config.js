@@ -20,7 +20,7 @@ const FILE = process.env.SITES_FILE || path.join(CONFIG_DIR, 'sites.json');
 
 const EMPTY = {
   sourceA: { baseUrl: '', mirrors: [], appId: '', identity: '' },
-  sourceB: { siteUrl: '', apiUrl: '', searchUrl: '' },
+  sourceB: { siteUrl: '', apiUrl: '', searchUrl: '', proxy: '' },
   hostMap: {},
 };
 
@@ -37,6 +37,7 @@ function envSites() {
   if (e.SITE_B_SITE) out.sourceB.siteUrl = e.SITE_B_SITE;
   if (e.SITE_B_API) out.sourceB.apiUrl = e.SITE_B_API;
   if (e.SITE_B_SEARCH) out.sourceB.searchUrl = e.SITE_B_SEARCH;
+  if (e.SITE_B_PROXY) out.sourceB.proxy = e.SITE_B_PROXY;
   return out;
 }
 
@@ -67,6 +68,7 @@ function normalize(raw = {}) {
       siteUrl: trimUrl(b.siteUrl),
       apiUrl: trimUrl(b.apiUrl),
       searchUrl: trimUrl(b.searchUrl),
+      proxy: str(b.proxy),
     },
     hostMap: sanitizeHostMap(raw.hostMap),
   };
@@ -108,7 +110,7 @@ export function siteStatus() {
   const s = loadSites();
   return {
     a: { configured: Boolean(s.sourceA.baseUrl && s.sourceA.appId) },
-    b: { configured: Boolean(s.sourceB.siteUrl && s.sourceB.apiUrl) },
+    b: { configured: Boolean(s.sourceB.siteUrl && s.sourceB.apiUrl), proxy: Boolean(s.sourceB.proxy) },
   };
 }
 

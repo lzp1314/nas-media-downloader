@@ -23,7 +23,7 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
-  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.9</button>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.11</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
@@ -139,18 +139,22 @@
         <div class="spanel on" data-panel="general">
           <div class="card">
             <div class="card-head"><h3>下载引擎</h3><span class="pill" id="enginePill">检测中</span></div>
-            <p class="desc">内置 aria2，开箱即用；已跑 qBittorrent 也可以切过去，BT 做种与 peer 调度更强。</p>
+            <p class="desc">
+              自动分流会把种子、磁力交给 qBittorrent（有 DHT、PEX、uTP，找 peer 更强），
+              网盘直链交给内置 aria2（多连接分段更快）。没配 qB 时种子自动回落 aria2，不影响使用。
+            </p>
             <div class="field">
-              <label>引擎</label>
+              <label>分流方式</label>
               <select id="engineSel">
-                <option value="aria2">aria2（内置，推荐）</option>
-                <option value="qbit">qBittorrent</option>
+                <option value="auto">自动分流（推荐）</option>
+                <option value="aria2">全部走 aria2</option>
+                <option value="qbit">全部走 qBittorrent</option>
               </select>
               <button class="btn sm" id="btnSaveEngine">保存</button>
             </div>
             <div id="qbitRow" class="field" hidden>
               <label>qBittorrent</label>
-              <input id="qbitUrl" placeholder="http://192.168.1.10:8080" />
+              <input id="qbitUrl" placeholder="http://127.0.0.1:8080" />
               <input id="qbitUser" placeholder="用户名" class="w120" />
               <input id="qbitPass" type="password" placeholder="密码" class="w140" />
               <button class="btn sm" id="btnSaveQbit">保存并测试</button>
@@ -160,7 +164,7 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.9</span></div>
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.11</span></div>
             <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
             <div class="status" id="verStatus"></div>
             <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
@@ -354,7 +358,7 @@
 <div class="modal" id="verModal" hidden>
   <div class="dialog ver-dialog">
     <h3>版本与更新</h3>
-    <div class="ver-now">当前版本 <b id="verNow">v1.2.9</b></div>
+    <div class="ver-now">当前版本 <b id="verNow">v1.2.11</b></div>
     <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
     <div class="ver-cmd" id="verCmd" hidden>
       <small>在 NAS 的 compose 目录执行：</small>

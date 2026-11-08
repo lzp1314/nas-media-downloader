@@ -167,6 +167,7 @@ export async function syncIndex({ pages } = {}) {
         const res = await httpRequest(pageUrl(cat.key, page), {
           headers: { Referer: `${host()}/${cat.key}/` },
           timeout: 20000,
+          ...(requireB().proxy ? { proxy: requireB().proxy } : {}),
         });
         if (res.status === 404) break;
         html = res.text;

@@ -4,7 +4,8 @@
     "sites.json 已被 .gitignore 排除，不会进入仓库，也不会打进镜像。",
     "也可以改用环境变量：SITE_A_BASE / SITE_A_APP_ID / SITE_A_IDENTITY、SITE_B_SITE / SITE_B_API / SITE_B_SEARCH。",
     "留空表示该片源未接入，界面会提示「未接入」，不会报错。",
-    "hostMap 是给片源单独用的 hosts：站点域名在本机线路连不上时，把域名钉到另一个可用 IP（只对本程序生效，不改系统），例如 {\"www.example.com\": \"203.0.113.10\"}。"
+    "hostMap 是给片源单独用的 hosts：站点域名在本机线路连不上时，把域名钉到另一个可用 IP（只对本程序生效，不改系统），例如 {\"www.example.com\": \"203.0.113.10\"}。",
+    "sourceB.proxy 只在「本机出口 IP 被站点丢弃、TCP 直接超时」时才需要填：写一条 HTTP 或 SOCKS5 代理，源 B 的请求会从这里出去，不影响源 A。留空表示直连。格式如 http://127.0.0.1:7890、http://账号:密码@10.0.0.2:3128、socks5://127.0.0.1:1080。"
   ],
   "sourceA": {
     "baseUrl": "",
@@ -15,7 +16,8 @@
   "sourceB": {
     "siteUrl": "",
     "apiUrl": "",
-    "searchUrl": ""
+    "searchUrl": "",
+    "proxy": ""
   },
   "hostMap": {}
 }

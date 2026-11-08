@@ -70,7 +70,7 @@ import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo
 import { createJob, getJob } from './lib/jobs.js';
 import { getHot } from './sources/hot.js';
 import { searchIndex, startIndexSync, indexStatus, loadIndex } from './indexer.js';
-import { currentEngine, aria2Engine, qbitEngine } from './engine/index.js';
+import { currentEngine, engineByName, engineMode, routeFor, qbitReady, aria2Engine, qbitEngine } from './engine/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -198,16 +198,24 @@ on('GET', '/api/health', async (req, res) => sendJson(res, 200, { ok: true, upti
 
 on('GET', '/api/meta', async (req, res) => {
   const settings = publicSettings();
-  const engine = currentEngine();
-  const ping = await engine.ping();
+  const mode = engineMode();
+  // auto 档两个引擎都可能被用到，状态都得查；单档模式下另一个只作为提示
+  const [aria2Ping, qbitPing] = await Promise.all([
+    aria2Engine.ping(),
+    mode === 'aria2' && !qbitReady() ? Promise.resolve(null) : qbitEngine.ping(),
+  ]);
+  const primaryName = mode === 'qbit' ? 'qbit' : 'aria2';
+  const primary = primaryName === 'qbit' ? qbitPing || aria2Ping : aria2Ping;
   const sites = siteStatus();
   sendJson(res, 200, {
     settings,
-    engine: { name: engine.name, ...ping },
+    engine: { name: primaryName, mode, ...primary },
+    engines: { aria2: aria2Ping, qbit: qbitPing },
     index: indexStatus(),
     sources: {
       a: Boolean(sites.a.configured),
       b: Boolean(sites.b.configured),
+      bProxy: Boolean(sites.b.proxy),
       m: Boolean(sourceStatus().configured),
     },
     version: VERSION,
@@ -623,8 +631,8 @@ on('POST', '/api/download', async (req, res) => {
   const target = findRoot(allowedRoots(), dir || loadSettings().defaultDir);
   if (!target) return sendJson(res, 403, { error: '目标目录不在允许范围内' });
   await fsp.mkdir(target.abs, { recursive: true });
-  const engine = currentEngine();
   let r;
+  let route;
   if (rid) {
     const rec = linkCache.get(rid);
     if (!rec || Date.now() - rec.at > LINK_TTL) {
@@ -635,45 +643,97 @@ on('POST', '/api/download', async (req, res) => {
     if (rec.kind === 'magnet') {
       const sel = picked.map(Number).filter((n) => Number.isInteger(n) && n > 0).join(',');
       if (!sel) return sendJson(res, 400, { error: '文件序号不合法' });
-      if (engine.name === 'qbit') {
+      route = routeFor('torrent');
+      if (route.engine.name === 'qbit') {
         // qBittorrent 用磁力原链接添加，拿到文件列表后再把未勾选的设为不下载
-        r = await engine.add({ magnet: rec.magnet, dir: target.abs, selectFile: sel, hash: rec.hash });
+        r = await route.engine.add({ magnet: rec.magnet, dir: target.abs, selectFile: sel, hash: rec.hash });
       } else {
         const buf = await readCachedTorrent(rec.hash);
         if (!buf) return sendJson(res, 400, { error: '种子缓存已失效，请重新解析' });
-        r = await engine.add({ torrent: buf.toString('base64'), dir: target.abs, selectFile: sel });
+        r = await route.engine.add({ torrent: buf.toString('base64'), dir: target.abs, selectFile: sel });
       }
     } else {
       const urls = await resolveDownloadUrls(rec.share, picked);
       for (const u of urls) u.out = safeName(u.out);
-      r = await engine.add({ urls, dir: target.abs });
+      route = routeFor('direct');
+      r = await route.engine.add({ urls, dir: target.abs });
     }
   } else if (torrentUrl) {
     // 站点只给 .torrent：还原成磁力（带 tracker），两个引擎都走现成的整包下载分支
     const seed = await loadSeed(torrentUrl);
-    r = await engine.add({ magnet: seed.magnet, dir: target.abs, hash: seed.hash });
+    route = routeFor('torrent');
+    r = await route.engine.add({ magnet: seed.magnet, dir: target.abs, hash: seed.hash });
   } else {
     if (!magnet || !/^magnet:\?/i.test(String(magnet))) {
       return sendJson(res, 400, { error: '仅支持磁力链接下载' });
     }
-    r = await engine.add({ magnet: String(magnet), dir: target.abs });
+    route = routeFor('torrent');
+    r = await route.engine.add({ magnet: String(magnet), dir: target.abs });
   }
-  sendJson(res, 200, { ok: true, id: r.id, count: r.count || 1, dir: target.abs, engine: engine.name });
+  sendJson(res, 200, {
+    ok: true,
+    id: r.id,
+    count: r.count || 1,
+    dir: target.abs,
+    engine: route.engine.name,
+    mode: route.mode,
+    note: route.note,
+    already: Boolean(r.already),
+  });
 });
+
+/**
+ * 任务列表把两个引擎合并返回。
+ * 以前只查当前引擎，切到 qB 后 aria2 里正在跑的任务就「凭空消失」——其实一直在下，只是没显示。
+ * 临时连不上的引擎歇 60 秒再试，避免每次轮询都卡在超时上。
+ */
+const engineDownAt = { aria2: 0, qbit: 0 };
 
 on('GET', '/api/tasks', async (req, res) => {
-  const engine = currentEngine();
-  const data = await engine.list();
-  sendJson(res, 200, { engine: engine.name, ...data });
+  // 自动分流档下两个引擎都在干活，没有「主引擎」一说，都查
+  const mode = engineMode();
+  const active = mode === 'auto' ? 'auto' : mode;
+  const engines = [aria2Engine, qbitEngine].filter((e) => {
+    const must = active === 'auto' ? e.name === 'aria2' : e.name === active;
+    if (must) return true;
+    if (e.name === 'qbit' && !qbitReady()) return false;
+    return Date.now() >= (engineDownAt[e.name] || 0);
+  });
+  const settled = await Promise.allSettled(engines.map((e) => e.list()));
+  const data = { engine: active, tasks: [], globalSpeed: 0, globalUpload: 0, active: 0, waiting: 0, stopped: 0, errors: [] };
+  settled.forEach((r, i) => {
+    const e = engines[i];
+    if (r.status === 'rejected') {
+      engineDownAt[e.name] = Date.now() + 60000;
+      data.errors.push({ engine: e.name, message: String(r.reason?.message || r.reason) });
+      return;
+    }
+    data.tasks.push(...r.value.tasks);
+    data.globalSpeed += r.value.globalSpeed || 0;
+    data.globalUpload += r.value.globalUpload || 0;
+  });
+  data.active = data.tasks.filter((t) => t.status === 'downloading').length;
+  data.waiting = data.tasks.filter((t) => t.status === 'queued').length;
+  data.stopped = data.tasks.filter((t) => ['done', 'error', 'removed'].includes(t.status)).length;
+  // 只有「必用的引擎自己挂了」才算失败：另一个引擎连不上只提示，不能把整个任务页打空
+  const activeErr = data.errors.find((x) => x.engine === (active === 'auto' ? 'aria2' : active));
+  if (!data.tasks.length && activeErr) throw new Error(activeErr.message);
+  sendJson(res, 200, data);
 });
 
-on('POST', '/api/tasks/:id/pause', async (req, res, params) => {
-  await currentEngine().pause(params.id);
+/** 任务操作按任务自带的引擎走，不能一律用「当前引擎」 */
+function engineFor(url) {
+  const name = url.searchParams.get('engine');
+  return name === 'aria2' || name === 'qbit' ? engineByName(name) : currentEngine();
+}
+
+on('POST', '/api/tasks/:id/pause', async (req, res, params, url) => {
+  await engineFor(url).pause(params.id);
   sendJson(res, 200, { ok: true });
 });
 
-on('POST', '/api/tasks/:id/resume', async (req, res, params) => {
-  await currentEngine().resume(params.id);
+on('POST', '/api/tasks/:id/resume', async (req, res, params, url) => {
+  await engineFor(url).resume(params.id);
   sendJson(res, 200, { ok: true });
 });
 
@@ -699,7 +759,7 @@ async function purgeFiles(targetDir, name) {
 }
 
 on('DELETE', '/api/tasks/:id', async (req, res, params, url) => {
-  const engine = currentEngine();
+  const engine = engineFor(url);
   const withFiles = url.searchParams.get('files') === '1';
   let snapshot = null;
   if (withFiles) {
@@ -774,9 +834,12 @@ on('POST', '/api/settings', async (req, res) => {
   const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
+  if ('engine' in clean && !['auto', 'aria2', 'qbit'].includes(clean.engine)) {
+    return sendJson(res, 400, { error: '下载引擎只能是 auto / aria2 / qbit' });
+  }
   saveSettings(clean);
   // 改了 qBittorrent 地址或账号后丢掉旧会话，否则「保存并测试」可能还在用上一份 SID
-  if ('qbit' in clean || clean.engine === 'qbit') qbitEngine.reset();
+  if ('qbit' in clean || clean.engine === 'qbit' || clean.engine === 'auto') qbitEngine.reset();
   sendJson(res, 200, { ok: true, settings: publicSettings() });
 });
 
@@ -922,8 +985,38 @@ const server = http.createServer(async (req, res) => {
 });
 
 loadIndex();
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[media-downloader] listening on :${PORT}`);
+
+/**
+ * 监听地址决定能不能用 IPv6 访问。
+ *
+ * 以前写死 '0.0.0.0'，只接 IPv4。移动/联通家宽现在普遍给了公网 IPv6，
+ * 而 IPv4 基本都在运营商 NAT 后面（WAN 口拿到 100.64.x.x 拿不到公网地址），
+ * 所以 IPv6 是外网访问的唯一入口——写死 IPv4 等于把这条路堵死。
+ *
+ * 不指定 host 时 Node 监听 ::，Linux 默认双栈，IPv4 与 IPv6 同时能进。
+ * 万一系统禁用了 IPv6（:: 会报 EAFNOSUPPORT/EADDRNOTAVAIL），退回 IPv4-only，
+ * 不能因为这一条就让整个容器起不来。
+ */
+function listenDual(onReady) {
+  const attempt = (host) => {
+    const onError = (err) => {
+      if (host !== '0.0.0.0' && ['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL'].includes(err.code)) {
+        console.warn(`[media-downloader] IPv6 不可用（${err.code}），退回只监听 IPv4`);
+        server.removeListener('error', onError);
+        attempt('0.0.0.0');
+        return;
+      }
+      throw err;
+    };
+    server.once('error', onError);
+    if (host) server.listen(PORT, host, onReady);
+    else server.listen(PORT, onReady);
+  };
+  attempt('');
+}
+
+listenDual(() => {
+  console.log(`[media-downloader] listening on :${PORT} (${server.address()?.family || 'IPv4'})`);
   console.log(`[media-downloader] config: ${CONFIG_DIR}`);
   for (const r of allowedRoots()) {
     const ok = fs.existsSync(r);

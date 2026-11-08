@@ -1066,7 +1066,7 @@ $('dirConfirm').addEventListener('click', async () => {
   const btn = $('dirConfirm');
   btn.disabled = true;
   try {
-    await api('/api/download', {
+    const r = await api('/api/download', {
       method: 'POST',
       body: JSON.stringify({
         magnet: state.pending.magnet,
@@ -1080,7 +1080,13 @@ $('dirConfirm').addEventListener('click', async () => {
     const count = state.pending.count || 1;
     state.pending = null;
     closeSheet();
-    toast(count > 1 ? `已加入 ${count} 个下载任务` : '已加入下载队列');
+    // 分流后同一个按钮可能进不同的引擎，告诉用户进了哪个，省得以为是丢任务
+    const eng = r?.engine === 'qbit' ? 'qB' : 'aria2';
+    toast(
+      r && r.already
+        ? `已经在下载列表里，没有重复添加（${eng}）`
+        : count > 1 ? `已加入 ${count} 个下载任务 · ${eng}` : `已加入下载队列 · ${eng}`,
+    );
     switchView('tasks');
   } catch (err) {
     toast(err.message, true);
@@ -1099,17 +1105,22 @@ function statusText(s) {
 const DONE_STATUSES = new Set(['done', 'removed']);
 let doneExpanded = false;
 
-function taskCard(t) {
+function taskCard(t, activeEngine) {
   const eta = t.speed > 0 ? fmtEta((t.size - t.done) / t.speed) : '--';
   const canPause = t.status === 'downloading' || t.status === 'queued';
+  // 固定单引擎时，另一个引擎里还在跑的任务单独标一下，免得以为不是自己的；
+  // 自动分流档下两个引擎都在用，标了反而全是标签，就不标了
+  const other = t.engine && activeEngine && activeEngine !== 'auto' && t.engine !== activeEngine;
+  const engTag = other ? `<span class="eng" title="这个任务在 ${esc(t.engine)} 里">${t.engine === 'qbit' ? 'qB' : 'aria2'}</span>` : '';
+  const eng = esc(t.engine || '');
   return `<div class="task st-${esc(t.status)}">
     <div class="top">
-      <span class="stat ${esc(t.status)}">${esc(statusText(t.status))}</span>
+      <span class="stat ${esc(t.status)}">${esc(statusText(t.status))}</span>${engTag}
       <div class="nm" title="${esc(t.name)}">${esc(t.name)}</div>
       <div class="acts">
-        ${canPause ? `<button class="btn sm ghost" data-act="pause" data-id="${esc(t.id)}">暂停</button>` : ''}
-        ${t.status === 'paused' ? `<button class="btn sm ghost" data-act="resume" data-id="${esc(t.id)}">继续</button>` : ''}
-        <button class="btn sm danger" data-act="del" data-id="${esc(t.id)}">删除</button>
+        ${canPause ? `<button class="btn sm ghost" data-act="pause" data-id="${esc(t.id)}" data-eng="${eng}">暂停</button>` : ''}
+        ${t.status === 'paused' ? `<button class="btn sm ghost" data-act="resume" data-id="${esc(t.id)}" data-eng="${eng}">继续</button>` : ''}
+        <button class="btn sm danger" data-act="del" data-id="${esc(t.id)}" data-eng="${eng}">删除</button>
       </div>
     </div>
     <div class="prog"><i style="width:${Math.min(100, t.progress || 0).toFixed(1)}%"></i></div>
@@ -1147,16 +1158,20 @@ async function loadTasks() {
     cnt.hidden = active === 0;
     cnt.textContent = String(active);
 
-    $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>　活动 ${data.active} / 等待 ${data.waiting}`;
+    const bad = (data.errors || []).filter((e) => e.message);
+    const badTip = bad.length
+      ? `　<span class="err">${bad.map((e) => `${e.engine === 'qbit' ? 'qB' : 'aria2'} 未连接`).join('、')}</span>`
+      : '';
+    $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>　活动 ${data.active} / 等待 ${data.waiting}${badTip}`;
     $('taskEmpty').hidden = list.length > 0;
-    const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map(taskCard);
-    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map(taskCard);
+    const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map((t) => taskCard(t, data.engine));
+    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map((t) => taskCard(t, data.engine));
     $('tasks').innerHTML =
       taskGroup('进行中', 'live', running) + taskGroup('已完成', 'done', finished, true);
 
     $('tasks')
       .querySelectorAll('[data-act]')
-      .forEach((btn) => btn.addEventListener('click', () => taskAction(btn.dataset.act, btn.dataset.id)));
+      .forEach((btn) => btn.addEventListener('click', () => taskAction(btn.dataset.act, btn.dataset.id, btn.dataset.eng)));
     $('tasks')
       .querySelectorAll('[data-toggle-done]')
       .forEach((btn) =>
@@ -1170,14 +1185,16 @@ async function loadTasks() {
   }
 }
 
-async function taskAction(act, id) {
+async function taskAction(act, id, eng) {
+  const q = eng ? `engine=${encodeURIComponent(eng)}` : '';
   try {
     if (act === 'del') {
       const withFiles = confirm('删除任务。是否同时删除已下载的文件？\n\n确定＝同时删文件，取消＝只删任务');
-      await api(`/api/tasks/${encodeURIComponent(id)}?files=${withFiles ? 1 : 0}`, { method: 'DELETE' });
+      const qs = [q, `files=${withFiles ? 1 : 0}`].filter(Boolean).join('&');
+      await api(`/api/tasks/${encodeURIComponent(id)}?${qs}`, { method: 'DELETE' });
       toast(withFiles ? '任务与文件已删除' : '任务已删除');
     } else {
-      await api(`/api/tasks/${encodeURIComponent(id)}/${act}`, { method: 'POST' });
+      await api(`/api/tasks/${encodeURIComponent(id)}/${act}${q ? `?${q}` : ''}`, { method: 'POST' });
     }
     await loadTasks();
   } catch (err) {
@@ -1348,6 +1365,14 @@ $('btnMgTest').addEventListener('click', async () => {
 });
 
 /* ---------------- 设置 ---------------- */
+function diagHtml(d) {
+  if (!d) return '';
+  return `<div class="diag-head">连接诊断</div>
+    <div class="diag-line"><span>请求地址</span><b>${esc(d.url || '—')}</b></div>
+    <div class="diag-line"><span>HTTP 状态</span><b>${esc(String(d.http ?? 0))}</b></div>
+    ${d.body ? `<div class="diag-line"><span>响应摘要</span><b>${esc(d.body)}</b></div>` : ''}`;
+}
+
 async function loadSettingsView() {
   loadMagnetSources();
   try {
@@ -1355,29 +1380,41 @@ async function loadSettingsView() {
     const s = data.settings;
     state.meta = s;
 
-    $('engineSel').value = s.engine;
-    $('qbitRow').hidden = s.engine !== 'qbit';
+    $('engineSel').value = s.engine || 'auto';
+    $('qbitRow').hidden = s.engine === 'aria2';
     $('qbitUrl').value = s.qbit?.url || '';
     $('qbitUser').value = s.qbit?.username || '';
+    const mode = data.engine.mode || s.engine || 'auto';
+    const engs = data.engines || {};
     const ep = $('enginePill');
-    ep.textContent = data.engine.ok ? `${data.engine.name} 就绪` : `${data.engine.name} 离线`;
+    ep.textContent = mode === 'auto' ? '自动分流' : data.engine.ok ? `${data.engine.name} 就绪` : `${data.engine.name} 离线`;
     ep.className = `pill ${data.engine.ok ? 'ok' : 'bad'}`;
     const diag = $('engineDiag');
-    if (data.engine.ok) {
+    // 一个引擎的状态行：圆点 + 名称 + 用途 + 版本或原因
+    const engLine = (label, role, ping, missingNote) => {
+      if (!ping) {
+        return `<div class="row-line"><span>⚪</span><div class="p">${label}<small>${esc(missingNote || role)}</small></div></div>`;
+      }
+      const ok = Boolean(ping.ok);
+      const note = ok ? `${role} · 版本 ${esc(ping.version || '—')}` : `${role} · ${esc(friendly(ping.error || '不可用'))}`;
+      return `<div class="row-line"><span>${ok ? '🟢' : '🔴'}</span><div class="p">${label}<small>${note}</small></div></div>`;
+    };
+    if (mode === 'auto') {
+      const qb = engs.qbit;
+      $('engineStatus').innerHTML =
+        engLine('aria2', '网盘直链', engs.aria2) +
+        (qb
+          ? engLine('qBittorrent', '种子·磁力', qb)
+          : engLine('qBittorrent', '', null, '未填账号密码，种子暂时也交给 aria2 下载'));
+      diag.hidden = Boolean(engs.aria2?.ok);
+      if (!diag.hidden) diag.innerHTML = diagHtml(engs.aria2?.detail);
+    } else if (data.engine.ok) {
       $('engineStatus').innerHTML = `版本 ${esc(data.engine.version || '—')}`;
       diag.hidden = true;
     } else {
       $('engineStatus').innerHTML = `<span class="err">不可用：${esc(friendly(data.engine.error || ''))}</span>`;
-      const d = data.engine.detail;
-      if (d) {
-        diag.hidden = false;
-        diag.innerHTML = `<div class="diag-head">连接诊断</div>
-          <div class="diag-line"><span>请求地址</span><b>${esc(d.url || '—')}</b></div>
-          <div class="diag-line"><span>HTTP 状态</span><b>${esc(String(d.http ?? 0))}</b></div>
-          ${d.body ? `<div class="diag-line"><span>响应摘要</span><b>${esc(d.body)}</b></div>` : ''}`;
-      } else {
-        diag.hidden = true;
-      }
+      diag.hidden = !data.engine.detail;
+      if (!diag.hidden) diag.innerHTML = diagHtml(data.engine.detail);
     }
 
     // 片源接入状态
@@ -1386,11 +1423,12 @@ async function loadSettingsView() {
     const sp = $('sitePill');
     sp.textContent = okA && okB ? '已接入' : okA || okB ? '部分接入' : '未接入';
     sp.className = `pill ${okA && okB ? 'ok' : okA || okB ? '' : 'bad'}`;
-    const line = (label, ok) =>
+    const line = (label, ok, note) =>
       `<div class="row-line"><span>${ok ? '🟢' : '⚪'}</span><div class="p">${label}<small>${
-        ok ? '已接入，可正常搜索' : '未接入，填写 config/sites.json 后重启生效'
+        ok ? (note || '已接入，可正常搜索') : '未接入，填写 config/sites.json 后重启生效'
       }</small></div></div>`;
-    $('siteStatus').innerHTML = line('资源库 A', okA) + line('资源库 B', okB);
+    $('siteStatus').innerHTML = line('资源库 A', okA)
+      + line('资源库 B', okB, s.bProxy ? '已接入，请求经代理转发' : '');
 
     // 资源库 A 账号：先按有没有 token 渲染，再向站点确认真实有效性
     const ap = $('srcAPill');
@@ -1505,13 +1543,14 @@ $('btnSync').addEventListener('click', async () => {
 });
 
 $('engineSel').addEventListener('change', () => {
-  $('qbitRow').hidden = $('engineSel').value !== 'qbit';
+  // 选了自动分流也得填 qB 地址账号，所以只有「全部走 aria2」才把这一行收起来
+  $('qbitRow').hidden = $('engineSel').value === 'aria2';
 });
 
 $('btnSaveEngine').addEventListener('click', async () => {
   try {
     await api('/api/settings', { method: 'POST', body: JSON.stringify({ engine: $('engineSel').value }) });
-    toast('已切换引擎');
+    toast($('engineSel').value === 'auto' ? '已改为自动分流' : '已切换引擎');
     loadSettingsView();
     loadTasks();
   } catch (err) {
@@ -1521,11 +1560,11 @@ $('btnSaveEngine').addEventListener('click', async () => {
 
 $('btnSaveQbit').addEventListener('click', async () => {
   try {
+    // 只存 qB 账号，不动分流档位——自动分流档下填完账号，种子就会自动交给 qB
     await api('/api/settings', {
       method: 'POST',
       body: JSON.stringify({
         qbit: { url: $('qbitUrl').value.trim(), username: $('qbitUser').value.trim(), password: $('qbitPass').value },
-        engine: 'qbit',
       }),
     });
     toast('已保存');
@@ -1691,7 +1730,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.9';
+let currentVersion = '1.2.11';
 
 function setVersion(v) {
   if (!v) return;

@@ -68,6 +68,27 @@ export function diagnoseLogin(status, body) {
   return `qBittorrent 登录失败（HTTP ${status}）：${safeExcerpt(text, 60)}`;
 }
 
+/**
+ * 普通接口失败的说法。绝不能复用 diagnoseLogin：
+ * 下载任务出错时把 409 说成「登录失败」会把人带到错的方向（登录本来就是好的）。
+ */
+export function diagnoseApi(status, body) {
+  const text = String(body || '');
+  if (status === 409) return 'qBittorrent 拒绝这次操作（409）：种子可能已经在列表里，也可能它写不进指定的保存目录';
+  if (status === 202) return 'qBittorrent 没能添加这个种子（202）：磁力 / 种子文件无效，或 tracker 全都连不上';
+  if (status === 415) return '种子文件无效（415），换个资源试试';
+  if (status === 401 || status === 403) return `会话失效（HTTP ${status}），已尝试重新登录`;
+  if (status === 404) return '当前 qBittorrent 版本没有这个接口（404）';
+  if (status >= 500) return `qBittorrent 内部出错（HTTP ${status}）${text ? `：${safeExcerpt(text, 60)}` : ''}`;
+  return text ? safeExcerpt(text, 60) : `HTTP ${status}`;
+}
+
+/** 从磁力里取 infohash（只认 40 位 hex，base32 的交给 409 兜底逻辑处理） */
+export function hashFromMagnet(magnet) {
+  const m = String(magnet || '').match(/urn:btih:([0-9a-f]{40})(?:&|$)/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
 function networkMessage(err) {
   const s = String(err?.message || err);
   if (/timeout|abort/i.test(String(err?.name || '')) || /timeout/i.test(s)) {
@@ -148,7 +169,7 @@ class QbitEngine {
     return sid;
   }
 
-  async api(pathname, { method = 'GET', body, retry = true } = {}) {
+  async api(pathname, { method = 'GET', body, retry = true, accept = [] } = {}) {
     const sid = await this.login();
     const url = `${this.base()}/api/v2${pathname}`;
     const headers = { ...this.browserHeaders() };
@@ -172,8 +193,10 @@ class QbitEngine {
       return this.api(pathname, { method, body, retry: false });
     }
     const text = await res.text().catch(() => '');
+    // accept 里的状态码交给调用方判断：5.2+ 的 /torrents/add 用 202（2xx）和 409 表达「加不上 / 已存在」
+    if (accept.includes(res.status)) return { status: res.status, text };
     if (!res.ok) {
-      throw new QbitError(`qBittorrent 接口 ${pathname} 返回 HTTP ${res.status}：${diagnoseLogin(res.status, text)}`, {
+      throw new QbitError(`qBittorrent 接口 ${pathname} 返回 HTTP ${res.status}：${diagnoseApi(res.status, text)}`, {
         url,
         http: res.status,
         body: safeExcerpt(text),
@@ -195,17 +218,65 @@ class QbitEngine {
     }
   }
 
+  /** 这个 infohash 是否已经在 qBittorrent 里 */
+  async has(hash) {
+    if (!hash) return false;
+    const list = await this.api(`/torrents/info?hashes=${encodeURIComponent(hash)}`);
+    return Array.isArray(list) && list.length > 0;
+  }
+
+  async defaultSavePath() {
+    const v = await this.api('/app/defaultSavePath');
+    return typeof v === 'string' ? v : '';
+  }
+
+  addFailedMessage(status, dir, fallbackPath) {
+    if (status === 409) {
+      const parts = [
+        `qBittorrent 拒绝了这次添加（HTTP 409）：这个种子可能已经在 qBittorrent 里，也可能它无法创建保存目录 ${dir}`,
+      ];
+      if (fallbackPath) {
+        parts.push(
+          `qBittorrent 的默认保存目录是 ${fallbackPath}；如果那边看不到 ${dir}，说明 qBittorrent 没挂载同一个媒体目录——要么换一个它看得见的目录，要么把挂载补上`,
+        );
+      }
+      return parts.join('。');
+    }
+    return `qBittorrent 添加种子失败（HTTP ${status}）：${diagnoseApi(status, '')}`;
+  }
+
   async add({ magnet, dir, urls, selectFile, hash }) {
     const list = Array.isArray(urls) && urls.length ? urls.map((u) => u.url || u) : [magnet];
-    await this.api('/torrents/add', {
+    const target = hash || hashFromMagnet(magnet);
+    const pick = () => {
+      if (!selectFile || !target) return;
+      this.applySelection(target, selectFile).catch((err) => console.warn('[qbit] 选集设置失败：', err.message));
+    };
+    // 5.2+ 对重复添加直接回 409。先问一次，能省掉一次必败的请求，也不会把「已存在」当错误弹给用户。
+    if (target && (await this.has(target).catch(() => false))) {
+      pick();
+      return { id: target, count: list.length, already: true };
+    }
+    const r = await this.api('/torrents/add', {
       method: 'POST',
       body: encodeForm({ urls: list.join('\n'), savepath: dir, autoTMM: 'false' }),
+      accept: [202, 409],
     });
-    // 磁力选集：等 qBittorrent 拿到文件列表后把没勾的设为不下载
-    if (selectFile && hash) {
-      this.applySelection(hash, selectFile).catch((err) => console.warn('[qbit] 选集设置失败：', err.message));
+    if (r && typeof r === 'object' && r.status) {
+      // 409 也可能是「上一次其实加进去了」，再确认一次再决定报不报错
+      if (r.status === 409 && target && (await this.has(target).catch(() => false))) {
+        pick();
+        return { id: target, count: list.length, already: true };
+      }
+      const fallback = await this.defaultSavePath().catch(() => '');
+      throw new QbitError(this.addFailedMessage(r.status, dir, fallback), {
+        url: `${this.base()}/api/v2/torrents/add`,
+        http: r.status,
+        body: safeExcerpt(r.text),
+      });
     }
-    return { id: hash || '', count: list.length };
+    pick();
+    return { id: target || '', count: list.length };
   }
 
   async applySelection(hash, selectFile) {

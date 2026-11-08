@@ -55,7 +55,7 @@ const DEFAULT_ROOTS = ENV_ROOTS.length ? ENV_ROOTS : AUTO_ROOTS;
 function defaults() {
   const dirs = DEFAULT_ROOTS.length ? DEFAULT_ROOTS : [{ label: '下载目录', path: DOWNLOAD_ROOT }];
   return {
-    engine: 'aria2',
+    engine: 'auto',
     dirs,
     defaultDir: dirs[0].path,
     aria2: {
@@ -127,11 +127,32 @@ function normalize(s) {
     .map((d) => ({ label: d.label || path.basename(String(d.path)) || String(d.path), path: path.resolve(String(d.path)) }));
   s.defaultDir = path.resolve(String(s.defaultDir || s.dirs[0].path));
   if (!s.dirs.some((d) => d.path === s.defaultDir)) s.defaultDir = s.dirs[0].path;
+  if (!['auto', 'aria2', 'qbit'].includes(s.engine)) s.engine = 'auto';
   return s;
 }
 
 export function ensureConfigDir() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+/**
+ * v1 的 engine 只有 aria2 / qbit 二选一，没有「自动分流」这个概念，默认值是 'aria2'。
+ * v2 起默认 auto：种子交 qB、http 直链交 aria2。老配置里那两个值要么是旧默认，
+ * 要么是当时只能二选一时的将就，不代表用户不想要分流，所以统一迁到 auto——
+ * 迁完写回文件打上 v，之后用户手动选单引擎就不会再被改回来。
+ */
+function migrate(raw) {
+  if (Number(raw.v) >= 2) return false;
+  raw.engine = 'auto';
+  raw.v = 2;
+  return true;
+}
+
+function writeSettings(obj) {
+  ensureConfigDir();
+  const tmp = `${SETTINGS_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+  fs.renameSync(tmp, SETTINGS_FILE);
 }
 
 export function loadSettings() {
@@ -145,17 +166,22 @@ export function loadSettings() {
       raw = {};
     }
   }
+  const migrated = migrate(raw);
   cache = normalize(deepMerge(defaults(), raw));
+  if (migrated) {
+    try {
+      writeSettings(cache);
+    } catch (err) {
+      console.warn('[settings] 分流迁移写回失败：', err.message);
+    }
+  }
   return cache;
 }
 
 export function saveSettings(patch) {
   const current = loadSettings();
   cache = normalize(deepMerge(current, patch || {}));
-  ensureConfigDir();
-  const tmp = `${SETTINGS_FILE}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), 'utf8');
-  fs.renameSync(tmp, SETTINGS_FILE);
+  writeSettings(cache);
   return cache;
 }
 

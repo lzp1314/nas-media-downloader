@@ -15,6 +15,15 @@ const jar = new CookieJar();
 let authToken = '';
 let authAt = 0;
 
+/**
+ * 站点把本机出口 IP 挡了时（TCP 直接超时），可以在 sites.json 的 sourceB.proxy
+ * 填一条代理，让源 B 的请求从这里出去。没填返回空对象，行为与原来完全一致。
+ */
+function proxyOpt() {
+  const proxy = requireB().proxy;
+  return proxy ? { proxy } : {};
+}
+
 function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -91,7 +100,7 @@ function buildBehavior(nonce, serverTs) {
 
 async function passVerify(referer) {
   const { apiUrl, siteUrl } = requireB();
-  const chRes = await httpRequest(`${apiUrl}/get_challenge-v4.php`, { jar, headers: { Referer: referer } });
+  const chRes = await httpRequest(`${apiUrl}/get_challenge-v4.php`, { jar, ...proxyOpt(), headers: { Referer: referer } });
   let nonce = '';
   let ts = 0;
   try {
@@ -107,6 +116,7 @@ async function passVerify(referer) {
   const res = await httpRequest(`${apiUrl}/verify_pass-v4.php`, {
     method: 'POST',
     jar,
+    ...proxyOpt(),
     headers: { 'Content-Type': 'application/json', Referer: referer, Origin: siteUrl },
     body: JSON.stringify(payload),
   });
@@ -136,6 +146,7 @@ async function fetchLinks(meta, referer) {
     httpRequest(`${apiUrl}/get_links-v4.php?action=get${tk ? `&auth_token=${encodeURIComponent(tk)}` : ''}`, {
       method: 'POST',
       jar,
+      ...proxyOpt(),
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Referer: referer,
@@ -205,7 +216,7 @@ function flattenLinks(data) {
 /** 详情页：抓页面 → 过验证 → 取磁力 */
 export async function bDetail(url) {
   const { siteUrl } = requireB();
-  const page = await httpRequest(url, { jar, headers: { Referer: siteUrl } });
+  const page = await httpRequest(url, { jar, ...proxyOpt(), headers: { Referer: siteUrl } });
   const html = page.text;
   const gate = html.match(/id="secure-gate"[^>]*data-rid="(\d+)"[^>]*data-cid="(\d+)"[^>]*data-hash="([0-9a-zA-Z]+)"/);
   if (!gate) throw new Error('页面结构变化，未找到资源参数');
@@ -265,6 +276,7 @@ export async function bSearch(keyword) {
       const res = await httpRequest(url, {
         method: 'POST',
         jar,
+        ...proxyOpt(),
         timeout: 9000,
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',

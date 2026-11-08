@@ -89,6 +89,7 @@ function switchView(v) {
   $('searchWrap').hidden = v === 'settings';
   document.querySelector('.tabs').style.marginLeft = v === 'settings' ? 'auto' : '';
   if (v === 'tasks') loadTasks();
+  if (v === 'sub') loadSubs();
   if (v === 'settings') loadSettingsView();
   if (location.hash !== `#${v}`) history.replaceState(null, '', `#${v}`);
   if (v === 'search') $('kw').focus();
@@ -1735,7 +1736,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.12';
+let currentVersion = '1.2.13';
 
 function setVersion(v) {
   if (!v) return;
@@ -1771,6 +1772,242 @@ $('verModal').addEventListener('click', (e) => {
 $('btnCheckUpdate').addEventListener('click', checkUpdate);
 $('btnCheckUpdate2').addEventListener('click', checkUpdate);
 
+/* ---------------- 剧集订阅 ---------------- */
+const WEEK_NAME = ['', '每周一', '每周二', '每周三', '每周四', '每周五', '每周六', '每周日'];
+const DOW_NAME = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+let subItems = [];
+let editingSubId = '';
+const subBusy = new Set();
+
+const fmtWhen = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+async function loadSubs() {
+  try {
+    const d = await api('/api/sub');
+    subItems = d.items || [];
+    renderSubs(d);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function subCard(s) {
+  const day = Number(s.updateDay) || 0;
+  const off = s.enabled === false;
+  const busy = subBusy.has(s.id);
+  const pending = Number(s.pending) || 0;
+  const last = s.lastResult || '还没检查过';
+  const when = off
+    ? '已暂停，不再自动检查'
+    : s.nextCheckAt
+      ? `下次检查 ${fmtWhen(s.nextCheckAt)}`
+      : '排队等首次检查';
+  // 更新日标签：填了才有意义，没填就灰着说明「匀速轮询」
+  const dayTag = day
+    ? `<span class="day">${DOW_NAME[day]}更新</span>`
+    : '<span class="day off">未指定更新日</span>';
+  const logs = (s.log || []).slice(-2).reverse();
+  return `<div class="sub${off ? ' off' : ''}" data-id="${esc(s.id)}">
+  <div class="top">
+    <div class="nm" title="${esc(s.title)}">${esc(s.title)}</div>
+    ${dayTag}
+    <span class="stat ${busy ? 'downloading' : off ? 'paused' : 'done'}">${busy ? '检查中' : off ? '已暂停' : '订阅中'}</span>
+  </div>
+  <div class="line">${esc(last)}${pending ? ` · <span class="warn">${pending} 集下发失败</span>` : ''}</div>
+  <div class="path" title="${esc(s.dir)}">${esc(s.dir)}</div>
+  <div class="line">${esc(when)}</div>
+  <div class="acts">
+    <button class="btn sm" data-act="check"${busy ? ' disabled' : ''}>${busy ? '检查中…' : '立即检查'}</button>
+    <button class="btn sm ghost" data-act="edit">编辑</button>
+    <button class="btn sm ghost" data-act="toggle">${off ? '启用' : '暂停'}</button>
+    <button class="btn sm danger" data-act="del">删除</button>
+  </div>
+  ${logs.length ? `<div class="recent">${logs.map((l) => `${fmtWhen(l.at)}　${esc(l.text)}`).join('<br />')}</div>` : ''}
+</div>`;
+}
+
+function renderSubs(d) {
+  const stats = d?.stats || {};
+  const limit = stats.dailyLimit || 12;
+  const used = stats.dailyUsed || 0;
+  $('subStat').innerHTML = `共 ${subItems.length} 个 · 今日已检查 ${used}/${limit}`;
+  $('subList').innerHTML = subItems.map(subCard).join('');
+  $('subEmpty').hidden = subItems.length > 0;
+  // 没配豆瓣 Cookie 时只提一句，不影响用（suggest 不需要登录）
+  const hint = $('subHint');
+  if (subItems.length && !d?.douban?.ready) {
+    hint.hidden = false;
+    hint.textContent = '没填豆瓣 Cookie：自动补集数、别名可能不准。在设置 → 资源接入里填上更稳。';
+  } else {
+    hint.hidden = true;
+  }
+}
+
+function fillSubDirs(pick) {
+  const flat = state.flatDirs || [];
+  const sel = $('subDir');
+  if (!flat.length) {
+    sel.innerHTML = '<option value="">（还没有可用片库）</option>';
+    return;
+  }
+  sel.innerHTML = flat
+    .map((n) => `<option value="${esc(n.path)}">${'　'.repeat(n.depth)}${esc(n.label)}</option>`)
+    .join('');
+  if (pick && flat.some((n) => n.path === pick)) sel.value = pick;
+  else if (state.dirs?.defaultDir) sel.value = state.dirs.defaultDir;
+}
+
+function openSubModal(sub) {
+  editingSubId = sub?.id || '';
+  $('subModalTitle').textContent = sub ? '编辑订阅' : '新建订阅';
+  $('subTitle').value = sub?.title || state.keyword || '';
+  $('subKeyword').value = sub?.keyword && sub.keyword !== sub.title ? sub.keyword : '';
+  $('subTotal').value = sub?.totalEpisodes || '';
+  $('subFrom').value = sub?.startEpisode && sub.startEpisode > 1 ? sub.startEpisode : '';
+  $('subTo').value = sub?.endEpisode || '';
+  $('subQuality').value = String(sub?.quality || 1080);
+  $('subDay').value = String(sub?.updateDay || 0);
+  $('subFormTip').textContent = '';
+  fillSubDirs(sub?.dir);
+  $('subModal').hidden = false;
+  setTimeout(() => $('subTitle').focus(), 30);
+}
+
+$('btnNewSub').addEventListener('click', () => {
+  fillSubDirs('');
+  openSubModal(null);
+});
+
+$('subCancel').addEventListener('click', () => { $('subModal').hidden = true; });
+$('subModal').addEventListener('click', (e) => {
+  if (e.target === $('subModal')) $('subModal').hidden = true;
+});
+
+$('btnDouban').addEventListener('click', async () => {
+  const q = $('subTitle').value.trim();
+  const tip = $('subFormTip');
+  if (!q) return toast('先填剧名', true);
+  tip.textContent = '正在豆瓣查…';
+  try {
+    const r = await api(`/api/douban/search?q=${encodeURIComponent(q)}`);
+    const items = r.items || [];
+    if (!items.length) {
+      tip.textContent = '豆瓣没搜到，不影响使用——直接用剧名去资源站搜就行';
+      return;
+    }
+    const it = items.find((x) => x.episodes > 0) || items[0];
+    if (it.episodes > 0) {
+      $('subTotal').value = it.episodes;
+      tip.textContent = `豆瓣：${it.title}${it.year ? ` (${it.year})` : ''} · 共 ${it.episodes} 集，已自动填好`;
+    } else {
+      tip.textContent = `豆瓣：${it.title}${it.year ? ` (${it.year})` : ''} · 没有集数信息，手动填「总集数」更准`;
+    }
+  } catch (err) {
+    tip.textContent = err.message;
+  }
+});
+
+$('subSave').addEventListener('click', async () => {
+  const body = {
+    title: $('subTitle').value.trim(),
+    keyword: $('subKeyword').value.trim(),
+    dir: $('subDir').value,
+    updateDay: Number($('subDay').value) || 0,
+    totalEpisodes: Number($('subTotal').value) || 0,
+    startEpisode: Math.max(1, Number($('subFrom').value) || 1),
+    endEpisode: Number($('subTo').value) || 0,
+    quality: Number($('subQuality').value) || 1080,
+  };
+  if (!body.title) return toast('先填剧名', true);
+  if (!body.dir) return toast('没有可选的片库目录', true);
+  const btn = $('subSave');
+  btn.disabled = true;
+  try {
+    let id = editingSubId;
+    if (id) {
+      await api(`/api/sub/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(body) });
+      $('subModal').hidden = true;
+      toast('已保存');
+      await loadSubs();
+    } else {
+      const r = await api('/api/sub', { method: 'POST', body: JSON.stringify(body) });
+      id = r.item.id;
+      $('subModal').hidden = true;
+      await loadSubs();
+      runSubCheck(id);
+    }
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function runSubCheck(id) {
+  if (subBusy.has(id)) return;
+  subBusy.add(id);
+  renderSubs();
+  try {
+    const r = await api(`/api/sub/${encodeURIComponent(id)}/check`, { method: 'POST' });
+    if (!r.pending) {
+      toast('检查完成');
+      return;
+    }
+    for (let i = 0; i < 120; i += 1) {
+      await new Promise((res) => setTimeout(res, 1500));
+      const st = await api(`/api/job?id=${encodeURIComponent(r.jobId)}`);
+      if (st.state === 'running') continue;
+      if (st.state === 'error') toast(st.error, true);
+      else toast(st.result?.message || '检查完成');
+      break;
+    }
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    subBusy.delete(id);
+    await loadSubs();
+  }
+}
+
+$('subList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const id = btn.closest('.sub')?.dataset.id;
+  const sub = subItems.find((s) => s.id === id);
+  if (!sub) return;
+  const act = btn.dataset.act;
+  if (act === 'check') return runSubCheck(id);
+  if (act === 'edit') return openSubModal(sub);
+  if (act === 'toggle') {
+    try {
+      await api(`/api/sub/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: sub.enabled === false }),
+      });
+      toast(sub.enabled === false ? '已启用，稍后会自动检查' : '已暂停');
+      loadSubs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
+  if (act === 'del') {
+    if (!confirm(`删除订阅「${sub.title}」？\n已下载的文件不会删。`)) return;
+    try {
+      await api(`/api/sub/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      toast('已删除');
+      loadSubs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+});
+
 /* ---------------- 启动 ---------------- */
 (async function init() {
   try {
@@ -1798,7 +2035,7 @@ $('btnCheckUpdate2').addEventListener('click', checkUpdate);
   }
 
   const h = location.hash.replace('#', '');
-  if (['search', 'tasks', 'settings'].includes(h)) switchView(h);
+  if (['search', 'tasks', 'sub', 'settings'].includes(h)) switchView(h);
   else kwEl.focus();
 
   setInterval(() => {

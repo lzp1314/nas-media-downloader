@@ -71,6 +71,10 @@ import { createJob, getJob } from './lib/jobs.js';
 import { getHot } from './sources/hot.js';
 import { searchIndex, startIndexSync, indexStatus, loadIndex } from './indexer.js';
 import { currentEngine, engineByName, engineMode, routeFor, qbitReady, aria2Engine, qbitEngine } from './engine/index.js';
+import { listSubs, addSub, updateSub, removeSub, getSub, patchSub } from './subscribe/store.js';
+import { runCheck, startScheduler, subStats } from './subscribe/runner.js';
+import { scanEpisodes, missingEpisodes } from './subscribe/episodes.js';
+import { suggest as doubanSuggest, subject as doubanSubject, watching as doubanWatching, doubanReady } from './sources/douban.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -833,7 +837,7 @@ on('GET', '/api/disk', async (req, res) => {
 
 on('POST', '/api/settings', async (req, res) => {
   const patch = await readBody(req);
-  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan'];
+  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan', 'douban', 'subscribe'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   if ('engine' in clean && !['auto', 'aria2', 'qbit'].includes(clean.engine)) {
@@ -929,6 +933,106 @@ on('POST', '/api/index/sync', async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* 剧集订阅                                                            */
+/* ------------------------------------------------------------------ */
+on('GET', '/api/sub', async (req, res) => {
+  const items = listSubs().map((s) => ({
+    ...s,
+    engineMode: loadSettings().engine,
+    pending: Object.values(s.sent || {}).filter((x) => x.state === 'failed').length,
+  }));
+  sendJson(res, 200, { items, stats: subStats(), douban: { ready: doubanReady() } });
+});
+
+/** 单条详情：顺带把本地已有集扫出来，前端才能显示「已有 / 目标」 */
+on('GET', '/api/sub/:id/status', async (req, res, params) => {
+  const item = getSub(params.id);
+  if (!item) return sendJson(res, 404, { error: '订阅不存在' });
+  const roots = allowedRoots().map((r) => path.resolve(r));
+  const abs = path.resolve(item.dir);
+  const inside = roots.some((r) => abs === r || abs.startsWith(`${r}${path.sep}`));
+  const have = inside ? await scanEpisodes(abs).catch(() => ({ episodes: [], files: 0, bytes: 0 })) : { episodes: [], files: 0, bytes: 0 };
+  const to = Math.max(item.totalEpisodes || 0, ...(have.episodes.length ? have.episodes : [0]));
+  const missing = inside ? missingEpisodes({ have: have.episodes, sent: item.sent, from: item.startEpisode, to }) : [];
+  sendJson(res, 200, { item, have, missing, to, inside });
+});
+
+on('POST', '/api/sub', async (req, res) => {
+  const body = await readBody(req);
+  try {
+    const item = addSub(body);
+    // 新建的订阅立刻排在队首，用户不用等一个轮询周期才看到第一次结果
+    patchSub(item.id, { nextCheckAt: Date.now() });
+    sendJson(res, 200, { ok: true, item });
+  } catch (err) {
+    sendJson(res, 400, { error: cleanMsg(err.message) });
+  }
+});
+
+on('POST', '/api/sub/:id', async (req, res, params) => {
+  const body = await readBody(req);
+  try {
+    sendJson(res, 200, { ok: true, item: updateSub(params.id, body) });
+  } catch (err) {
+    sendJson(res, 400, { error: cleanMsg(err.message) });
+  }
+});
+
+on('DELETE', '/api/sub/:id', async (req, res, params) => {
+  try {
+    removeSub(params.id);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 400, { error: cleanMsg(err.message) });
+  }
+});
+
+/** 手动触发一次检查：可能几十秒，走后台任务 + 轮询，避免被反代掐断 */
+on('POST', '/api/sub/:id/check', async (req, res, params) => {
+  const item = getSub(params.id);
+  if (!item) return sendJson(res, 404, { error: '订阅不存在' });
+  const job = createJob(() => runCheck(params.id, { force: true }));
+  sendJson(res, 200, { pending: true, jobId: job.id });
+});
+
+on('GET', '/api/job', async (req, res, params, url) => {
+  const job = getJob(url.searchParams.get('id'));
+  if (!job) return sendJson(res, 404, { error: '任务已过期' });
+  if (job.state === 'running') return sendJson(res, 200, { state: 'running', elapsed: Math.round((Date.now() - job.startedAt) / 1000) });
+  if (job.state === 'error') return sendJson(res, 200, { state: 'error', error: cleanMsg(job.error) });
+  sendJson(res, 200, { state: 'done', result: job.result });
+});
+
+/* 豆瓣：只做元数据，搜剧名公开可用，条目详情和「在看」要 Cookie */
+on('GET', '/api/douban/search', async (req, res, params, url) => {
+  const q = url.searchParams.get('q') || '';
+  if (!q.trim()) return sendJson(res, 200, { items: [] });
+  try {
+    sendJson(res, 200, { items: await doubanSuggest(q) });
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), items: [] });
+  }
+});
+
+on('POST', '/api/douban/lookup', async (req, res) => {
+  const { id } = await readBody(req);
+  if (!id) return sendJson(res, 400, { error: '缺少豆瓣条目 id' });
+  try {
+    sendJson(res, 200, await doubanSubject(id));
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), needCookie: Boolean(err.needCookie) });
+  }
+});
+
+on('GET', '/api/douban/watching', async (req, res) => {
+  try {
+    sendJson(res, 200, { items: await doubanWatching() });
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), needCookie: Boolean(err.needCookie) });
+  }
+});
+
+/* ------------------------------------------------------------------ */
 /* 服务器                                                              */
 /* ------------------------------------------------------------------ */
 const server = http.createServer(async (req, res) => {
@@ -1019,6 +1123,7 @@ function listenDual(onReady) {
 
 listenDual(() => {
   console.log(`[media-downloader] listening on :${PORT} (${server.address()?.family || 'IPv4'})`);
+  startScheduler();
   console.log(`[media-downloader] config: ${CONFIG_DIR}`);
   for (const r of allowedRoots()) {
     const ok = fs.existsSync(r);

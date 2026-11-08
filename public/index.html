@@ -23,7 +23,7 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
-  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.12</button>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.13</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
@@ -35,6 +35,7 @@
   <nav class="tabs">
     <button data-view="search" class="on">搜索</button>
     <button data-view="tasks">任务<span class="cnt" id="taskCnt" hidden>0</span></button>
+    <button data-view="sub">订阅</button>
     <button data-view="settings">设置</button>
   </nav>
 </header>
@@ -114,6 +115,23 @@
     </div>
   </section>
 
+  <!-- ============ 订阅 ============ -->
+  <section class="view" id="view-sub">
+    <div class="section-head">
+      <h2>剧集订阅</h2>
+      <div class="taskstat" id="subStat"></div>
+      <button class="btn sm" id="btnNewSub">+ 新建订阅</button>
+    </div>
+    <div class="subhint" id="subHint" hidden></div>
+    <div id="subList" class="subs"></div>
+    <div class="state" id="subEmpty">
+      <div class="state-inner">
+        <div class="empty-ico">◎</div>
+        <div class="state-msg">还没有订阅<br /><small>订阅一部剧后，更新了会自动补下缺的那几集</small></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ 设置 ============ -->
   <section class="view" id="view-settings">
     <div class="section-head"><h2>设置</h2></div>
@@ -164,7 +182,7 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.12</span></div>
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.13</span></div>
             <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
             <div class="status" id="verStatus"></div>
             <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
@@ -337,6 +355,65 @@
 </div>
 
 <!-- 目录选择 -->
+<!-- 新建 / 编辑订阅 -->
+<div class="modal" id="subModal" hidden>
+  <div class="dialog">
+    <h3 id="subModalTitle">新建订阅</h3>
+    <p class="tip">填剧名就能用。更新日只影响<b>多久查一次</b>，不影响能不能补到。</p>
+
+    <div class="field">
+      <label>剧名</label>
+      <input id="subTitle" placeholder="例如：凡人修仙传" autocomplete="off" />
+      <button class="btn sm" id="btnDouban" title="用豆瓣补全总集数和别名">豆瓣查</button>
+    </div>
+    <div class="field">
+      <label>搜索词</label>
+      <input id="subKeyword" placeholder="留空则用剧名；站点命名不同时填站上的写法" autocomplete="off" />
+    </div>
+    <div class="field">
+      <label>保存到</label>
+      <select id="subDir"></select>
+    </div>
+    <div class="field">
+      <label>更新日</label>
+      <select id="subDay">
+        <option value="0">不指定（每 1 小时查一次）</option>
+        <option value="1">每周一</option>
+        <option value="2">每周二</option>
+        <option value="3">每周三</option>
+        <option value="4">每周四</option>
+        <option value="5">每周五</option>
+        <option value="6">每周六</option>
+        <option value="7">每周日</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>总集数</label>
+      <input id="subTotal" type="number" min="0" placeholder="留空则按站点能看到的集数走" class="w140" />
+      <span class="subnote">填了它，全下完就不再频繁查</span>
+    </div>
+    <div class="field">
+      <label>补集范围</label>
+      <input id="subFrom" type="number" min="1" placeholder="从第几集" class="w120" />
+      <input id="subTo" type="number" min="0" placeholder="到第几集" class="w120" />
+    </div>
+    <div class="field">
+      <label>清晰度</label>
+      <select id="subQuality">
+        <option value="1080">优先 1080p（推荐）</option>
+        <option value="2160">优先 2160p / 4K</option>
+        <option value="720">优先 720p</option>
+        <option value="480">优先 480p</option>
+      </select>
+    </div>
+    <div class="status" id="subFormTip"></div>
+    <div class="dialog-foot">
+      <button class="btn ghost" id="subCancel">取消</button>
+      <button class="btn primary" id="subSave">保存并检查</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="dirModal" hidden>
   <div class="dialog">
     <h3>保存到</h3>
@@ -358,7 +435,7 @@
 <div class="modal" id="verModal" hidden>
   <div class="dialog ver-dialog">
     <h3>版本与更新</h3>
-    <div class="ver-now">当前版本 <b id="verNow">v1.2.12</b></div>
+    <div class="ver-now">当前版本 <b id="verNow">v1.2.13</b></div>
     <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
     <div class="ver-cmd" id="verCmd" hidden>
       <small>在 NAS 的 compose 目录执行：</small>

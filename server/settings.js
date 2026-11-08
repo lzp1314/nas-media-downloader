@@ -85,6 +85,21 @@ function defaults() {
     pan: {
       cookie: '',
     },
+    /** 豆瓣：只做元数据（总集数/别名），Cookie 与用户 id 都留空则完全不用 */
+    douban: {
+      cookie: '',
+      uid: '',
+    },
+    /** 剧集订阅 */
+    subscribe: {
+      enabled: true,
+      intervalMinutes: 60,
+      // 周更剧：更新日（和次日，对付延迟上传）密查，其余时间低频
+      updateIntervalMinutes: 30,
+      offIntervalMinutes: 360,
+      maxPerRun: 3,
+      dailyLimit: 12,
+    },
   };
 }
 
@@ -128,6 +143,15 @@ function normalize(s) {
   s.defaultDir = path.resolve(String(s.defaultDir || s.dirs[0].path));
   if (!s.dirs.some((d) => d.path === s.defaultDir)) s.defaultDir = s.dirs[0].path;
   if (!['auto', 'aria2', 'qbit'].includes(s.engine)) s.engine = 'auto';
+  // 订阅参数收敛到安全区间：间隔太短会打爆资源站，条数太多一次补太多集
+  const sub = s.subscribe || {};
+  s.subscribe = {
+    enabled: sub.enabled !== false,
+    intervalMinutes: Math.min(720, Math.max(15, Number(sub.intervalMinutes) || 60)),
+    maxPerRun: Math.min(10, Math.max(1, Number(sub.maxPerRun) || 3)),
+    dailyLimit: Math.min(48, Math.max(1, Number(sub.dailyLimit) || 12)),
+  };
+  s.douban = { cookie: String(s.douban?.cookie || ''), uid: String(s.douban?.uid || '').replace(/\D/g, '') };
   return s;
 }
 
@@ -228,6 +252,8 @@ export function publicSettings() {
     },
     aria2: { rpc: s.aria2.rpc, secretSet: Boolean(s.aria2.secret) },
     pan: { configured: Boolean(s.pan?.cookie) },
+    douban: { cookieSet: Boolean(s.douban?.cookie), uid: s.douban?.uid || '', ready: Boolean(s.douban?.cookie) },
+    subscribe: s.subscribe,
     accessPasswordSet: Boolean(process.env.ACCESS_PASSWORD),
   };
 }

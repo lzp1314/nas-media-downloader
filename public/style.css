@@ -410,6 +410,45 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .stat.paused, .stat.queued { background: rgba(255, 176, 32, .12); color: #ffcb6b; }
 .stat.error { background: rgba(255, 95, 109, .12); color: #ff9098; }
 
+/* ---------------- 剧集订阅 ---------------- */
+.subs { display: flex; flex-direction: column; gap: 9px; }
+.sub {
+  padding: 13px 15px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--surface);
+}
+.sub.off { opacity: .6; }
+.sub .top { display: flex; align-items: center; gap: 10px; }
+.sub .nm {
+  flex: 1; min-width: 0; font-size: 16px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 更新日单独一个浅色标签：和任务页的引擎标签视觉上分开，不打架 */
+.sub .day {
+  flex: 0 0 auto; font-size: 12.5px; padding: 1px 7px; border-radius: 5px;
+  background: rgba(34, 211, 166, .13); color: #7fe3c4; white-space: nowrap;
+}
+.sub .day.off { background: var(--surface-3); color: var(--dim); }
+.sub .line { font-size: 14.5px; color: var(--muted); margin-top: 8px; line-height: 1.7; }
+.sub .line b { color: var(--text); font-weight: 600; }
+.sub .line .warn { color: #ffcb6b; }
+.sub .path {
+  font-size: 13px; color: var(--dim); margin-top: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sub .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.sub .acts .btn { font-size: 14.5px; padding: 4px 10px; }
+.sub .recent {
+  margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--line);
+  font-size: 13px; color: var(--dim); line-height: 1.85;
+  max-height: 76px; overflow: hidden;
+}
+.subhint {
+  margin-bottom: 12px; padding: 9px 13px; border-radius: 10px;
+  background: rgba(255, 176, 32, .08); border: 1px solid rgba(255, 176, 32, .2);
+  color: #ffcb6b; font-size: 14.5px; line-height: 1.75;
+}
+.subnote { flex: 0 0 auto; font-size: 13px; color: var(--dim); }
+
 /* ---------------- 设置 ---------------- */
 .card {
   background: var(--surface); border: 1px solid var(--line);
@@ -673,6 +712,11 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   #magnetList .row-line .btn { padding: 4px 9px; font-size: 13.5px; }
   #magnetList .row-line .sw { margin-left: auto; }
   .ver { font-size: 12px; padding: 2px 7px; }
+  /* 标题行窄屏放不下一行：标题不许被压成竖排单字，统计行自己占一行 */
+  .section-head { flex-wrap: wrap; row-gap: 6px; }
+  .section-head h2 { flex: 0 0 auto; white-space: nowrap; }
+  .section-head > .btn { margin-left: auto; }
+  .taskstat { flex: 1 1 100%; order: 5; margin-left: 0; }
   .probe-step { flex-direction: column; gap: 1px; }
   .probe-step span:last-child { text-align: left; }
   .dialog-foot { flex-wrap: wrap; }

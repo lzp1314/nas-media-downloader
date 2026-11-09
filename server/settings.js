@@ -33,20 +33,66 @@ function parseRoots() {
 const ENV_ROOTS = parseRoots();
 
 /**
+ * 读容器内的挂载表（/proc/mounts，第二列是挂载点）。
+ *
+ * v1.2.25：基础镜像 node:22-alpine 自带 /media/cdrom、/media/floppy、/media/usb
+ * 等空目录，Dockerfile 又声明了 VOLUME ["/media", "/config"] —— 若 /media 本身
+ * 没被显式挂载，Docker 会建匿名卷并把镜像里这些目录复制进去。旧 autoRoots()
+ * 无差别扫一级目录，就把它们全当成片库列到了设置页。
+ *
+ * 读不到挂载表（Windows/macOS 本地开发、运行时不暴露 /proc）时返回 null，
+ * autoRoots 会沿用原来的扫描行为。
+ * MEDIA_MOUNTS_FILE 只用于离线测试注入一份假挂载表，生产环境不设置。
+ */
+function readMountPoints() {
+  const files = [process.env.MEDIA_MOUNTS_FILE, '/proc/mounts'].filter(Boolean);
+  let text = null;
+  for (const f of files) {
+    try { text = fs.readFileSync(f, 'utf8'); break; } catch { /* 试下一个 */ }
+  }
+  if (text == null) return null;
+  const out = new Set();
+  for (const line of text.split('\n')) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 2) continue;
+    // /proc/mounts 把路径里的空格 / tab / 换行 / 反斜杠转义成 \040 \011 \012 \134
+    const p = cols[1]
+      .replace(/\\040/g, ' ').replace(/\\011/g, '\t')
+      .replace(/\\012/g, '\n').replace(/\\134/g, '\\');
+    if (!path.isAbsolute(p)) continue;
+    out.add(path.resolve(p));
+  }
+  return out;
+}
+
+/**
  * 启动时扫描 MEDIA_ROOT（默认 /media）下的一级目录，作为「自动发现的片库」。
  * 把 /vol1/1000/影视 挂到 /media/影视 即可，库名直接取目录名。
  * 这份结果只在进程启动时算一次；加盘后重建容器即可被 mergeDirs 补进配置。
+ *
+ * v1.2.25：挂载表里存在 MEDIA_ROOT 下（含自身）的挂载点时，只把「真正挂进来的」
+ * 一级目录当片库，镜像自带的空目录一律忽略。挂载表跟 MEDIA_ROOT 完全无关
+ * （本地开发、离线测试）时沿用旧扫描行为，不影响已有用法。
+ *
+ * 边界：若把「整个盘」直接挂到 /media，一级目录本身不是挂载点，自动发现会返回
+ * 空列表 —— 这种情况请用 DOWNLOADS_DIRS 显式列出片库。
  */
 function autoRoots() {
+  let entries;
   try {
-    const entries = fs.readdirSync(MEDIA_ROOT, { withFileTypes: true });
-    return entries
+    entries = fs.readdirSync(MEDIA_ROOT, { withFileTypes: true })
       .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'lost+found')
       .map((e) => ({ label: e.name, path: path.join(MEDIA_ROOT, e.name) }))
       .sort((a, b) => a.label.localeCompare(b.label, 'zh'));
   } catch {
     return [];
   }
+  const mounts = readMountPoints();
+  if (!mounts) return entries;
+  const root = path.resolve(MEDIA_ROOT);
+  const related = [...mounts].some((p) => p === root || path.dirname(p) === root);
+  if (!related) return entries;
+  return entries.filter((e) => mounts.has(path.resolve(e.path)));
 }
 
 const AUTO_ROOTS = ENV_ROOTS.length ? [] : autoRoots();

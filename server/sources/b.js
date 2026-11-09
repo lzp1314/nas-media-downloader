@@ -235,14 +235,14 @@ export async function bDetail(url) {
     const m = html.match(re);
     return m ? stripTags(m[1]) : '';
   };
-  const imgMatch = html.match(/<img[^>]+src="(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp))"/i);
+  const image = pickPosterUrl(html, siteUrl);
 
   const groups = flattenLinks(data);
   return {
     source: 'b',
     id: url,
     title: decodeEntities(title),
-    image: imgMatch ? imgMatch[1] : '',
+    image,
     year: grab('年代'),
     score: grab('豆瓣评分'),
     meta: {
@@ -303,7 +303,7 @@ export function parseResultPage(html) {
     source: 'b',
     id: it.u,
     title: it.t,
-    image: '',
+    image: it.i || '',
     score: it.s,
     quality: it.q,
     year: '',
@@ -311,6 +311,53 @@ export function parseResultPage(html) {
     link: it.u,
   }));
   return { total: items.length, items };
+}
+
+/** 站点图床里混着 logo、占位图、二维码，这些不能当海报 */
+const BAD_IMG = /(?:logo|blank|default|loading|placeholder|icon|avatar|spacer|advert|banner|qrcode|pixel|spinner|1x1|noimg|nopic)/i;
+
+/** 把 src / 相对路径 / //host 路径统一成绝对 http(s) 地址 */
+function absImgUrl(raw, siteUrl) {
+  const s = String(raw || '').trim();
+  if (!s || /[\s"'<>]/.test(s)) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  const base = String(siteUrl || '').replace(/\/+$/, '');
+  if (!base) return '';
+  if (/^\/\//.test(s)) return `https:${s}`;
+  if (s.startsWith('/')) return `${base}${s}`;
+  if (/^[\w./-]+\.(?:jpg|jpeg|png|webp|gif)(?:\?[\w=&%-]*)?$/i.test(s)) return `${base}/${s}`;
+  return '';
+}
+
+/**
+ * 从一个 HTML 片段里挑海报：兼容懒加载（data-src / srcset）与相对路径，跳过 logo 类图片。
+ * 结果页传单个 <li> 片段，详情页传整页 HTML。
+ */
+export function pickPosterUrl(html, siteUrl) {
+  const candidates = [];
+  for (const m of String(html || '').matchAll(/<img\b[^>]*>/gi)) {
+    const tag = m[0];
+    const attrs = {};
+    for (const a of tag.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+      attrs[a[1].toLowerCase()] = (a[2] ?? a[3] ?? a[4] ?? '').trim();
+    }
+    // 详情页整页里混着推荐位图片：class/alt 带主图语义的优先，结果页只有一个候选不受影响
+    const hint = `${attrs.class || ''} ${attrs.alt || ''} ${attrs.id || ''}`;
+    const priority = /(?:poster|cover|thumb|vod|detail|pic)/i.test(hint) ? 0 : 1;
+    for (const key of ['data-src', 'data-original', 'data-echo', 'data-lazy-src', 'src', 'srcset', 'data-srcset']) {
+      let v = attrs[key];
+      if (!v) continue;
+      if (/set$/.test(key)) v = v.split(',')[0].trim().split(/\s+/)[0];
+      candidates.push({ v, priority });
+    }
+  }
+  candidates.sort((a, b) => a.priority - b.priority);
+  for (const { v: raw } of candidates) {
+    if (/^data:/i.test(raw) || BAD_IMG.test(raw)) continue;
+    const url = absImgUrl(raw, siteUrl);
+    if (url) return url;
+  }
+  return '';
 }
 
 /**
@@ -353,6 +400,7 @@ function parseItems(html, cat) {
       c: cat || link[1],
       q: quality.trim(),
       s: score.trim(),
+      i: pickPosterUrl(chunk, siteUrl),
     });
   }
   return out;

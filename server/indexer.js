@@ -13,7 +13,7 @@ import { requireB, siteStatus } from './sources/config.js';
 
 const INDEX_FILE = path.join(CONFIG_DIR, 'library.json');
 
-let items = []; // {t,u,c,q,s}
+let items = []; // {t,u,c,q,s,i}；i 是海报地址，老索引没有这个字段
 let byUrl = new Map();
 let loaded = false;
 
@@ -95,7 +95,7 @@ export function searchIndex(keyword, limit = 60) {
     source: 'b',
     id: it.u,
     title: it.t,
-    image: '',
+    image: it.i || '',
     year: '',
     score: it.s || '',
     quality: it.q || '',
@@ -186,6 +186,9 @@ export async function syncIndex({ pages } = {}) {
           byUrl.set(it.u, it);
           items.push(it);
           newCount += 1;
+        } else if (!old.i && it.i) {
+          // 老版本索引没有海报：增量同步时顺手补上，不必让用户手动重建片库
+          old.i = it.i;
         }
       }
       status.added += newCount;

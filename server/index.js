@@ -61,6 +61,7 @@ import { loadSettings, saveSettings, publicSettings, allowedRoots, DOWNLOAD_ROOT
 import { findRoot, resolveInside, humanSize, httpRequest, DEFAULT_UA } from './lib/util.js';
 import { parseTorrentMeta } from './lib/bencode.js';
 import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
+import { backfillPosters, rememberPoster } from './lib/poster-cache.js';
 import { sourceA } from './sources/a.js';
 import { bDetail, bSearch, bEnabled } from './sources/b.js';
 import { siteStatus, requireA, hostMap } from './sources/config.js';
@@ -385,6 +386,8 @@ on('POST', '/api/search', async (req, res) => {
 
   await Promise.all(tasks);
   const items = mergeSearchItems(raw, kw);
+  // 分源搜索（只看源 B / 只看磁力）时本次请求里没有 A 的海报，用之前的搜索结果回填
+  backfillPosters(items);
   sendJson(res, 200, { items, notes, indexCount: indexStatus().total });
 });
 
@@ -468,6 +471,10 @@ on('POST', '/api/resolve', async (req, res) => {
     notes.push(hint);
   }
   if (!total && !notes.length) notes.push('没有解析到可用资源，换个片源或稍后重试');
+
+  // 详情页也可能给海报（源 B 的结果页没图时）：记下来，之后单独搜磁力也能借到
+  const metaYear = String(meta['年代'] || meta['上映'] || '').match(/\d{4}/)?.[0] || '';
+  if (image) rememberPoster(title, image, metaYear);
 
   sendJson(res, 200, {
     title,
@@ -813,7 +820,7 @@ on('GET', '/api/disk', async (req, res) => {
 
 on('POST', '/api/settings', async (req, res) => {
   const patch = await readBody(req);
-  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'douban', 'tmdb', 'subscribe'];
+  const allowed = ['engine', 'dirs', 'defaultDir', 'addDir', 'removeDir', 'aria2', 'qbit', 'a', 'b', 'douban', 'tmdb', 'subscribe'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   if ('engine' in clean && !['auto', 'aria2', 'qbit'].includes(clean.engine)) {

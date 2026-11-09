@@ -5,6 +5,7 @@ import { siteStatus } from './sources/config.js';
 const CONFIG_DIR = process.env.CONFIG_DIR || '/config';
 const SETTINGS_FILE = path.join(CONFIG_DIR, 'settings.json');
 const DOWNLOAD_ROOT = process.env.DOWNLOADS_DIR || '/downloads';
+const MEDIA_ROOT = process.env.MEDIA_ROOT || '/media';
 
 /**
  * 解析 DOWNLOADS_DIRS（支持多个挂载盘）：
@@ -32,17 +33,16 @@ function parseRoots() {
 const ENV_ROOTS = parseRoots();
 
 /**
- * 自动发现 MEDIA_ROOT（默认 /media）下的一级目录作为片库：
- * 把 /vol1/1000/影视 挂到 /media/影视 即可，库名直接取目录名，
- * 后续加盘只要在 compose 里再加一行 volumes，无需改其它配置。
+ * 启动时扫描 MEDIA_ROOT（默认 /media）下的一级目录，作为「自动发现的片库」。
+ * 把 /vol1/1000/影视 挂到 /media/影视 即可，库名直接取目录名。
+ * 这份结果只在进程启动时算一次；加盘后重建容器即可被 mergeDirs 补进配置。
  */
 function autoRoots() {
-  const mediaRoot = process.env.MEDIA_ROOT || '/media';
   try {
-    const entries = fs.readdirSync(mediaRoot, { withFileTypes: true });
+    const entries = fs.readdirSync(MEDIA_ROOT, { withFileTypes: true });
     return entries
       .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'lost+found')
-      .map((e) => ({ label: e.name, path: path.join(mediaRoot, e.name) }))
+      .map((e) => ({ label: e.name, path: path.join(MEDIA_ROOT, e.name) }))
       .sort((a, b) => a.label.localeCompare(b.label, 'zh'));
   } catch {
     return [];
@@ -57,6 +57,8 @@ function defaults() {
   return {
     engine: 'auto',
     dirs,
+    /** 用户在界面主动「移除」过的目录：重启时不再被自动发现加回来 */
+    removedRoots: [],
     defaultDir: dirs[0].path,
     aria2: {
       rpc: process.env.ARIA2_RPC || 'http://127.0.0.1:6800/jsonrpc',
@@ -132,21 +134,62 @@ function deepMerge(base, patch) {
   return patch === undefined ? base : patch;
 }
 
+/**
+ * 把「自动发现的一级目录」增量合并进用户配置，而不是只在配置全失效时整份覆盖。
+ *
+ * 规则（按优先级）：
+ *  1. compose 新挂的 /media/xxx 自动补进来 —— 加盘后重建容器就能在界面看到
+ *  2. 用户手工加的自定义路径（不在自动发现空间里）始终保留
+ *  3. 用户改过的显示名保留，不会被目录名覆盖
+ *  4. 自动发现空间内已不存在的目录（盘拔了/挂载撤了）自动清掉，插回来会再次出现
+ *  5. removedRoots 里记着用户主动点过「移除」的路径，不再自动加回
+ *
+ * DEFAULT_ROOTS 为空（例如没挂 /media）时返回原列表，完全沿用旧行为。
+ */
+function mergeDirs(s) {
+  const old = Array.isArray(s.dirs) ? s.dirs : [];
+  if (!DEFAULT_ROOTS.length) return old.length ? old : [{ label: '下载目录', path: path.resolve(DOWNLOAD_ROOT) }];
+
+  const resolve = (p) => path.resolve(String(p || ''));
+  const removed = new Set((Array.isArray(s.removedRoots) ? s.removedRoots : []).filter(Boolean).map(resolve));
+  // 自动发现目录所在的父目录（一般是 /media）：只有这一层里消失的路径才算「盘被拔了」
+  const autoParents = new Set(DEFAULT_ROOTS.map((d) => path.dirname(resolve(d.path))));
+  const isAutoSpace = (p) => autoParents.has(path.dirname(p));
+  const customNames = new Map();
+  for (const d of old) if (d && d.path && d.label) customNames.set(resolve(d.path), String(d.label));
+
+  const out = [];
+  const seen = new Set();
+  for (const d of DEFAULT_ROOTS) {
+    const p = resolve(d.path);
+    if (removed.has(p) || seen.has(p)) continue;
+    seen.add(p);
+    out.push({ label: customNames.get(p) || d.label || path.basename(p), path: p });
+  }
+  for (const d of old) {
+    if (!d || !d.path) continue;
+    const p = resolve(d.path);
+    if (seen.has(p) || removed.has(p)) continue;
+    if (isAutoSpace(p) && !fs.existsSync(p)) continue;
+    seen.add(p);
+    out.push({ label: customNames.get(p) || path.basename(p) || p, path: p });
+  }
+  return out.length ? out : [{ label: '下载目录', path: path.resolve(DOWNLOAD_ROOT) }];
+}
+
 let cache = null;
 
 /** 统一规范化：目录必须存在且为绝对路径，保证白名单比较不因写法不同而误判 */
 function normalize(s) {
   // 网盘功能已整体下线：历史配置里存过的网盘 Cookie 读进来就丢掉
   delete s.pan;
-  // 从旧版本升级：历史配置里的目录在容器内全都不存在（换了挂载点），
-  // 且环境里能识别出新的库时，直接用新的这份，避免界面上看不到刚挂载的库
-  if (DEFAULT_ROOTS.length && Array.isArray(s.dirs) && s.dirs.length > 0) {
-    const alive = s.dirs.some((d) => d && d.path && fs.existsSync(path.resolve(String(d.path))));
-    if (!alive) s.dirs = DEFAULT_ROOTS;
-  }
-  if (!Array.isArray(s.dirs) || s.dirs.length === 0) {
-    s.dirs = DEFAULT_ROOTS.length ? DEFAULT_ROOTS : [{ label: '下载目录', path: DOWNLOAD_ROOT }];
-  }
+  // 「界面上主动移除过」的目录名单，防止下次启动又被自动发现加回来
+  s.removedRoots = (Array.isArray(s.removedRoots) ? s.removedRoots : [])
+    .filter((p) => p && String(p).trim())
+    .map((p) => path.resolve(String(p)))
+    .slice(-50);
+  // 加盘后重建容器即自动补进列表；用户自定义路径、自定义显示名都保留
+  s.dirs = mergeDirs(s);
   s.dirs = s.dirs
     .filter((d) => d && d.path)
     .map((d) => ({ label: d.label || path.basename(String(d.path)) || String(d.path), path: path.resolve(String(d.path)) }));
@@ -243,7 +286,23 @@ export function loadSettings() {
 
 export function saveSettings(patch) {
   const current = loadSettings();
-  cache = normalize(deepMerge(current, patch || {}));
+  const input = patch && typeof patch === 'object' ? { ...patch } : {};
+  // addDir / removeDir 是界面增删目录时传的控制量，只用来维护「主动移除」名单，不落盘
+  const addDir = input.addDir ? path.resolve(String(input.addDir)) : '';
+  const removeDir = input.removeDir ? path.resolve(String(input.removeDir)) : '';
+  delete input.addDir;
+  delete input.removeDir;
+  const removed = new Set(Array.isArray(current.removedRoots) ? current.removedRoots : []);
+  if (removeDir) removed.add(removeDir);
+  if (addDir) removed.delete(addDir);
+  // 显式出现在 dirs 里的路径，一律视为「用户要它」，解除此前的移除标记
+  if (Array.isArray(input.dirs)) {
+    for (const d of input.dirs) if (d && d.path) removed.delete(path.resolve(String(d.path)));
+  }
+  // 名单必须在 normalize 之前注入：mergeDirs 要靠它决定哪些盘不再自动加回
+  const merged = deepMerge(current, input);
+  merged.removedRoots = [...removed].slice(-50);
+  cache = normalize(merged);
   writeSettings(cache);
   return cache;
 }

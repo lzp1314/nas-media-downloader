@@ -456,6 +456,17 @@ async function openSheet(item) {
 }
 
 function renderResources(data, item) {
+  // 搜索结果没给海报时，详情接口可能补到了（源 B 的结果页偶尔没图）：
+  // 顺手把抽屉和列表里那张卡的占位字一起换成真海报
+  if (data.image && !item.image) {
+    item.image = data.image;
+    $('sPoster').innerHTML = posterHtml(item, true);
+    const idx = state.items.indexOf(item);
+    if (idx >= 0) {
+      const card = $('results').querySelector(`.item[data-i="${idx}"] .poster`);
+      if (card) card.innerHTML = posterHtml(item);
+    }
+  }
   const metaBits = Object.entries(data.meta || {})
     .filter(([k, v]) => v && String(v).trim().length > 0 && String(v).trim() !== '·' && String(v).length < 40)
     .slice(0, 4)
@@ -1754,7 +1765,10 @@ function renderDirList(dirs) {
       btn.addEventListener('click', async () => {
         const dirs2 = (state.meta?.dirs || []).filter((d) => d.path !== btn.dataset.rmdir);
         if (!dirs2.length) return toast('至少保留一个目录', true);
-        await api('/api/settings', { method: 'POST', body: JSON.stringify({ dirs: dirs2, defaultDir: dirs2[0].path }) });
+        await api('/api/settings', {
+          method: 'POST',
+          body: JSON.stringify({ dirs: dirs2, defaultDir: dirs2[0].path, removeDir: btn.dataset.rmdir }),
+        });
         state.dirs = null;
         toast('已移除');
         loadSettingsView();
@@ -1769,7 +1783,7 @@ $('btnAddDir').addEventListener('click', async () => {
   try {
     await api('/api/settings', {
       method: 'POST',
-      body: JSON.stringify({ dirs: [...(state.meta?.dirs || []), { label, path }] }),
+      body: JSON.stringify({ dirs: [...(state.meta?.dirs || []), { label, path }], addDir: path }),
     });
     state.dirs = null;
     $('newDirPath').value = '';

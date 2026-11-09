@@ -163,7 +163,29 @@ async function fetchPage(url, source) {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
       body = source.postBody || '';
     }
-    const res = await fetch(url, { method: isPost ? 'POST' : 'GET', headers, body, signal: controller.signal, redirect: 'follow' });
+    let res;
+    if (!isPost) {
+      res = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'follow' });
+    } else {
+      // POST 不能直接交给 fetch 跟重定向：301/302 会被降级成 GET，表单内容（关键词）就丢了，
+      // 站点一跳域就只剩首页，看起来像「页面里没有磁力」。这里手工跟，保持 method+body。
+      const visited = new Set();
+      let cur = url;
+      for (let hop = 0; hop < 5; hop += 1) {
+        res = await fetch(cur, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' });
+        const loc = res.headers.get('location');
+        if (res.status === 303 && loc) {
+          // 303 是「去那边用 GET 看」，按规范换 GET
+          res = await fetch(new URL(loc, cur).href, { method: 'GET', headers, signal: controller.signal, redirect: 'follow' });
+          break;
+        }
+        if (![301, 302, 307, 308].includes(res.status) || !loc) break;
+        const next = new URL(loc, cur).href;
+        if (visited.has(next)) break;
+        visited.add(next);
+        cur = next;
+      }
+    }
     const buf = await res.arrayBuffer();
     let text = '';
     try {
@@ -313,7 +335,8 @@ export function extractFromHtml(html, baseUrl, source, limit = 40, meta = {}) {
  * 且几乎都长得像 id，就认定「这一层是详情页」，按页面顺序取前 N 条跟进。
  */
 const NOISE_SEG = /^(search|list|listing|tag|tags|sort|page|user|users|login|logout|register|signup|about|contact|tool|tools|help|faq|dmca|upload|home|index|rss|sitemap|static|assets?|public|api|category|browse|top|new|hot|latest|comments?|forum|misc|member|space|plugin|link|links|friend|ad|ads)$/i;
-const ID_SEG_RE = /^[!@~$]?[A-Za-z0-9_-]{3,32}$/;
+const PAGE_EXT_RE = /\.(?:s?html?|php|aspx?|jsp|cgi)$/i;
+const ID_SEG_RE = /^[!@~$]?[A-Za-z0-9_-]{3,32}(?:\.(?:s?html?|php|aspx?|jsp|cgi))?$/i;
 const QUERY_KEY_RE = /^(q|kw|wd|keyword|keywords|search|s|query|term|terms|name)$/i;
 const PAGING_KEY_RE = /^(p|page|pg|pn|start|offset|sort|order|orderby|asc|desc)$/i;
 
@@ -367,29 +390,47 @@ export function detailLinks(html, baseUrl, limit = 8) {
     byDepth.get(k).push(r);
   }
 
+  // 只按段数分组还不够：/doc/AbC12.html 与 /q/5rbW… 都是 2 段，会混进同一桶，
+  // 结果把「排序链接」当成详情页。所以先把「除变化位以外的固定部分」当成模板键。
   const templates = [];
   for (const [depth, group] of byDepth) {
     if (group.length < 3) continue;
-    const varied = [];
+
+    // A) 某一段是随手生成的 id：逐个位置试，按剩下的固定段分桶
+    const byTpl = new Map();
     for (let i = 0; i < depth; i += 1) {
-      const vals = new Set(group.map((r) => r.segs[i]));
-      if (vals.size < 3) continue;
-      const idRatio = group.filter((r) => ID_SEG_RE.test(r.segs[i])).length / group.length;
-      if (idRatio >= 0.8) varied.push(i);
+      for (const r of group) {
+        const ext = (r.segs[i].match(PAGE_EXT_RE) || [''])[0];
+        const tpl = '/' + r.segs.map((s, j) => (j === i ? `:id${ext}` : s)).join('/');
+        let entry = byTpl.get(tpl);
+        if (!entry) { entry = { i, rows: [] }; byTpl.set(tpl, entry); }
+        entry.rows.push(r);
+      }
     }
-    let queryKey = '';
-    if (!varied.length) {
-      // 路径完全一样、靠查询参数区分的站（/index.php?id=xxx）
-      const samePath = group.every((r) => r.segs.join('/') === group[0].segs.join('/'));
-      if (!samePath) continue;
-      const parsed = group.map((r) => new URL(r.href));
-      const keys = [...new Set(parsed.flatMap((u) => [...u.searchParams.keys()]))];
-      queryKey = keys.find((k) => new Set(parsed.map((u) => u.searchParams.get(k))).size >= 3) || '';
+    for (const [tpl, { i, rows }] of byTpl) {
+      if (rows.length < 3) continue;
+      if (new Set(rows.map((r) => r.segs[i])).size < 3) continue;
+      const idRatio = rows.filter((r) => ID_SEG_RE.test(r.segs[i])).length / rows.length;
+      if (idRatio < 0.8) continue;
+      templates.push({ tpl, group: rows });
+    }
+
+    // B) 路径完全一样、靠查询参数区分的站（/index.php?id=xxx），排除分页参数
+    const byPath = new Map();
+    for (const r of group) {
+      const p = '/' + r.segs.join('/');
+      if (!byPath.has(p)) byPath.set(p, []);
+      byPath.get(p).push(r);
+    }
+    for (const [p, rows] of byPath) {
+      if (rows.length < 3) continue;
+      const parsed = rows.map((r) => new URL(r.href));
+      const keys = [...new Set(parsed.flatMap((u) => [...u.searchParams.keys()]))]
+        .filter((k) => !PAGING_KEY_RE.test(k) && !QUERY_KEY_RE.test(k));
+      const queryKey = keys.find((k) => new Set(parsed.map((u) => u.searchParams.get(k))).size >= 3);
       if (!queryKey) continue;
+      templates.push({ tpl: `${p}?${queryKey}=:id`, group: rows });
     }
-    const tpl = '/' + group[0].segs.map((s, i) => (varied.includes(i) ? ':id' : s)).join('/')
-      + (queryKey ? `?${queryKey}=:id` : '');
-    templates.push({ tpl, group });
   }
   if (!templates.length) return [];
 

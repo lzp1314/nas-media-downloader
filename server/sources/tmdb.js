@@ -48,7 +48,7 @@ export function tmdbReady() {
 }
 
 function needAuth() {
-  const e = new Error('还没填 TMDB 密钥：去「设置 → 资源接入 → TMDB」填上读访问令牌或 API Key');
+  const e = new Error('还没填 TMDB 密钥：去「设置 → 影视元数据 → TMDB」填上读访问令牌或 API Key');
   e.code = 'ENEEDAUTH';
   return e;
 }

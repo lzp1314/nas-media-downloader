@@ -1417,6 +1417,9 @@ async function loadSettingsView() {
     $('qbitRow').hidden = s.engine === 'aria2';
     $('qbitUrl').value = s.qbit?.url || '';
     $('qbitUser').value = s.qbit?.username || '';
+    // 密码不回显：留空就是「不改」，所以占位文字要说明白，否则容易以为被清掉了
+    $('qbitPass').value = '';
+    $('qbitPass').placeholder = s.qbit?.configured ? '已保存，不改就留空' : '密码';
     const mode = data.engine.mode || s.engine || 'auto';
     const engs = data.engines || {};
     const ep = $('enginePill');
@@ -1510,6 +1513,10 @@ async function loadSettingsView() {
     $('panStatus').textContent = panOk
       ? '已保存 Cookie；重新粘贴分享链接就能取直链下载。'
       : '未设置 Cookie：仍可查看分享里的文件列表，但不能直接下载到 NAS。';
+    $('panCookie').value = '';
+    $('panCookie').placeholder = panOk
+      ? `已保存 · 末 4 位 ${s.pan?.cookieTail || '****'}（要换就粘贴新的）`
+      : '留空只能看文件列表，不能直连下载';
     renderDouban(s);
     renderTmdb(s);
     renderIndexLine(data.index);
@@ -1763,6 +1770,10 @@ function renderDouban(s) {
   pill.className = `pill ${ok ? 'ok' : ''}`;
   // Cookie 永远不回显：接口只告诉「有没有」，输入框留空表示「不改」
   $('doubanUid').value = s?.douban?.uid || '';
+  $('doubanCookie').value = '';
+  $('doubanCookie').placeholder = ok
+    ? `已保存 · 末 4 位 ${s.douban?.cookieTail || '****'}（要换就粘贴新的）`
+    : 'dbcl2=…; ck=…; 粘贴整行';
   $('doubanStatus').textContent = ok
     ? '已保存 Cookie：订阅里点「豆瓣查」能带回别名和总集数。'
     : '未设置：订阅照常能用，只是自动补的集数、别名可能不准。';
@@ -1812,12 +1823,22 @@ function renderTmdb(s) {
   const pill = $('tmdbPill');
   pill.textContent = ok ? '已设置' : '未设置';
   pill.className = `pill ${ok ? 'ok' : ''}`;
-  // 两个密钥框永远留空：接口只告诉「填没填」，留空表示「这次不改」
+  // 两个密钥框永远留空：接口只告诉「填没填」，留空表示「这次不改」。
+  // 但空着容易让人以为没存上，所以用占位文字带上末 4 位——既确认存了，又不把整串密钥摊在页面上。
   $('tmdbToken').value = '';
   $('tmdbKey').value = '';
+  $('tmdbToken').placeholder = t.tokenTail
+    ? `已保存 eyJ…${t.tokenTail}（要换就填新的）`
+    : 'v4 读访问令牌，eyJ 开头那串';
+  $('tmdbKey').placeholder = t.keyTail
+    ? `已保存 …${t.keyTail}（要换就填新的）`
+    : 'v3 密钥，32 位十六进制';
   $('tmdbBase').value = t.base || '';
+  const saved = [];
+  if (t.tokenTail) saved.push(`读访问令牌，末 4 位 ${t.tokenTail}`);
+  if (t.keyTail) saved.push(`API Key，末 4 位 ${t.keyTail}`);
   $('tmdbStatus').textContent = ok
-    ? `已保存密钥（${t.auth === 'token' ? '读访问令牌' : 'API Key'}）。订阅里点「TMDB 查」能带出总集数和下一集播出日。改的话直接填新的再保存即可。`
+    ? `已保存：${saved.join('；')}。订阅里点「TMDB 查」能带出总集数和下一集播出日。要换就填新的再保存。`
     : '未设置：订阅照常能用，只是总集数、更新日得自己填。';
 }
 
@@ -1867,6 +1888,43 @@ $('btnTestTmdb').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
+});
+
+/* ---------------- 密钥输入框：眼睛开关 ---------------- */
+// 保存后服务端不回显密钥，输入框必然是空的。眼睛只作用于「你刚粘进去的那串」，
+// 用途是核对有没有粘全——读令牌少一位就是 401，肉眼又看不出来。
+const ICO_EYE =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M2.5 12S6.4 5.8 12 5.8 21.5 12 21.5 12 17.6 18.2 12 18.2 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+const ICO_EYE_OFF =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M2.5 12S6.4 5.8 12 5.8c1.6 0 3 .45 4.2 1.1M21.5 12s-3.9 6.2-9.5 6.2c-1.5 0-2.9-.4-4-1"/><path d="M4 4l16 16"/></svg>';
+
+document.querySelectorAll('input[data-eye]').forEach((inp) => {
+  if (inp.parentElement?.classList.contains('pw')) return;
+  const wrap = document.createElement('span');
+  wrap.className = 'pw';
+  // 宽度类是给 input 用的，包一层之后要挪到外层，否则 .pw 会把定宽吃掉
+  for (const c of ['w110', 'w120', 'w140']) {
+    if (inp.classList.contains(c)) {
+      wrap.classList.add(c);
+      inp.classList.remove(c);
+    }
+  }
+  inp.parentNode.insertBefore(wrap, inp);
+  wrap.appendChild(inp);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'eye';
+  btn.title = '显示';
+  btn.setAttribute('aria-label', '显示或隐藏这段密钥');
+  btn.innerHTML = ICO_EYE_OFF;
+  btn.addEventListener('click', () => {
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    btn.innerHTML = show ? ICO_EYE : ICO_EYE_OFF;
+    btn.title = show ? '隐藏' : '显示';
+    inp.focus();
+  });
+  wrap.appendChild(btn);
 });
 
 /* ---------------- 设置板块切换 ---------------- */
@@ -1939,7 +1997,8 @@ async function loadSubs() {
 }
 
 function subCard(s) {
-  const day = Number(s.updateDay) || 0;
+  // 更新日可能是数组（一周更两天），老数据只有单值 updateDay
+  const ds = Array.isArray(s.updateDays) && s.updateDays.length ? s.updateDays : s.updateDay ? [Number(s.updateDay)] : [];
   const off = s.enabled === false;
   const busy = subBusy.has(s.id);
   const pending = Number(s.pending) || 0;
@@ -1951,8 +2010,11 @@ function subCard(s) {
       : '排队等首次检查';
   // 更新日标签：填了才有意义，没填就灰着说明「匀速轮询」
   const at = String(s.updateTime || '');
-  const dayTag = day
-    ? `<span class="day">${DOW_NAME[day]}${at ? ` ${esc(at)} 起` : '更新'}</span>`
+  const perNight = Math.max(1, Number(s.episodesPerNight) || 1);
+  const dayTag = ds.length
+    ? `<span class="day">${esc(ds.map((d) => DOW_NAME[d]).join('、'))}${
+        at ? ` ${esc(at)} 起` : '更新'
+      }${perNight > 1 ? ` · 每晚 ${perNight} 集` : ''}</span>`
     : '<span class="day off">未指定更新日</span>';
   const logs = (s.log || []).slice(-2).reverse();
   // TMDB 那一行：状态 + 总集数 + 下一集日期。拿不到就整行不出现，不留空壳
@@ -2008,11 +2070,11 @@ function renderSubs(d) {
   if (subItems.length && !tmOk) {
     hint.hidden = false;
     const extra = d?.douban?.ready ? '' : '豆瓣也没配，别名准确度会差一些。';
-    hint.innerHTML = `没填 TMDB 密钥：总集数要自己填，也不会自动跟播出日历。${extra}<a href="#" id="subHintGo">去设置 → 资源接入填上</a>`;
+    hint.innerHTML = `没填 TMDB 密钥：总集数要自己填，也不会自动跟播出日历。${extra}<a href="#" id="subHintGo">去设置 → 影视元数据填上</a>`;
     $('subHintGo').addEventListener('click', (e) => {
       e.preventDefault();
       switchView('settings');
-      const btn = document.querySelector('#settingsNav .snav[data-panel="sources"]');
+      const btn = document.querySelector('#settingsNav .snav[data-panel="meta"]');
       if (btn) btn.click();
       setTimeout(() => $('tmdbToken')?.focus(), 120);
     });
@@ -2053,6 +2115,17 @@ $('btnPickSubDir').addEventListener('click', async () => {
 });
 $('subDirText').addEventListener('click', () => $('btnPickSubDir').click());
 
+/** 更新日多选：数组进、方块点亮；一个都不选＝不指定 */
+function setSubDays(list) {
+  const set = new Set((list || []).map(Number).filter((d) => d >= 1 && d <= 7));
+  document.querySelectorAll('#subDays .dchip').forEach((b) => b.classList.toggle('on', set.has(Number(b.dataset.d))));
+  $('subDay').value = String([...set].sort((a, b) => a - b)[0] || 0);
+}
+function getSubDays() {
+  return [...document.querySelectorAll('#subDays .dchip.on')].map((b) => Number(b.dataset.d)).sort((a, b) => a - b);
+}
+document.querySelectorAll('#subDays .dchip').forEach((b) => b.addEventListener('click', () => b.classList.toggle('on')));
+
 function openSubModal(sub) {
   editingSubId = sub?.id || '';
   $('subModalTitle').textContent = sub ? '编辑订阅' : '新建订阅';
@@ -2062,8 +2135,9 @@ function openSubModal(sub) {
   $('subFrom').value = sub?.startEpisode && sub.startEpisode > 1 ? sub.startEpisode : '';
   $('subTo').value = sub?.endEpisode || '';
   $('subQuality').value = String(sub?.quality || 1080);
-  $('subDay').value = String(sub?.updateDay || 0);
+  setSubDays(Array.isArray(sub?.updateDays) && sub.updateDays.length ? sub.updateDays : sub?.updateDay ? [sub.updateDay] : []);
   $('subTime').value = sub?.updateTime || '';
+  $('subPerNight').value = String(sub?.episodesPerNight || 1);
   $('subTmdbId').value = sub?.tmdbId ? String(sub.tmdbId) : '';
   state.tmdbTitle = sub?.title || '';
   setSubDir(sub ? sub.dir : defaultSubDir());
@@ -2140,7 +2214,7 @@ async function searchTmdb(q) {
           e.preventDefault();
           $('tmdbModal').hidden = true;
           switchView('settings');
-          const b = document.querySelector('#settingsNav .snav[data-panel="sources"]');
+          const b = document.querySelector('#settingsNav .snav[data-panel="meta"]');
           if (b) b.click();
           setTimeout(() => $('tmdbToken')?.focus(), 120);
         });
@@ -2167,6 +2241,8 @@ function applyTmdb(d) {
   // 只有「下一集已经排期」才动更新日；完结剧保持用户原来的选择
   const wd = d.nextAirDate ? weekdayOfDate(d.nextAirDate) : 0;
   if (wd) {
+    // TMDB 只给「下一集哪天」，所以用它替换掉手选的那几天
+    setSubDays([wd]);
     $('subDay').value = String(wd);
     // 多季剧要带季号，否则「第 21 集」分不清是第几季的
     const multi = Number(d.totalSeasons) > 1 && Number(d.nextAirSeason) > 0;
@@ -2234,14 +2310,18 @@ $('btnDouban').addEventListener('click', async () => {
 });
 
 $('subSave').addEventListener('click', async () => {
-  const dayValue = Number($('subDay').value) || 0;
+  const dayList = getSubDays();
+  const dayValue = dayList[0] || 0;
   const body = {
     title: $('subTitle').value.trim(),
     keyword: $('subKeyword').value.trim(),
     dir: $('subDir').value,
+    updateDays: dayList,
+    // 旧字段一起发：老版本读 updateDay，保持向后兼容
     updateDay: dayValue,
     // 没选更新日就存不下时刻，避免留下一个看不出作用的孤儿值
     updateTime: dayValue ? ($('subTime').value || '') : '',
+    episodesPerNight: Number($('subPerNight').value) || 1,
     totalEpisodes: Number($('subTotal').value) || 0,
     // 永远发出去：0 表示「解绑」，不发明的话编辑时清空条目会失效（后端会沿用旧 id）
     tmdbId: Number($('subTmdbId').value) || 0,
@@ -2361,9 +2441,14 @@ $('subList').addEventListener('click', async (e) => {
     doSearch();
   }
 
-  const h = location.hash.replace('#', '');
-  if (['search', 'tasks', 'sub', 'settings'].includes(h)) switchView(h);
-  else kwEl.focus();
+  // #settings/meta 这类深链接：直接落到某个设置板块，省得进来再点一次
+  const [h, hp] = location.hash.replace('#', '').split('/');
+  if (['search', 'tasks', 'sub', 'settings'].includes(h)) {
+    switchView(h);
+    if (h === 'settings' && hp) {
+      document.querySelector(`#settingsNav .snav[data-panel="${hp}"]`)?.click();
+    }
+  } else kwEl.focus();
 
   setInterval(() => {
     if (!document.hidden) loadTasks();

@@ -140,12 +140,34 @@ function dayNoon(ts) {
   return weekdayOf(startOfDay(ts) + 12 * 3600 * 1000);
 }
 
+/** 更新日集合：新字段是数组，老数据只有一个 updateDay，两种都认 */
+function subDays(sub) {
+  const set = new Set();
+  if (Array.isArray(sub?.updateDays)) {
+    for (const x of sub.updateDays) {
+      const d = Math.floor(Number(x));
+      if (d >= 1 && d <= 7) set.add(d);
+    }
+  }
+  if (!set.size) {
+    const one = Math.floor(Number(sub?.updateDay)) || 0;
+    if (one >= 1 && one <= 7) set.add(one);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
 function windowSpan(sub) {
-  const day = Number(sub?.updateDay) || 0;
+  const own = subDays(sub);
   const clockTime = parseClock(sub?.updateTime);
-  if (day < 1 || day > 7 || !clockTime) return null;
+  if (!own.length || !clockTime) return null;
+  // 每个更新日都要把它「次日」也加进来：资源站晚发几小时是常态
+  const days = new Set();
+  for (const d of own) {
+    days.add(d);
+    days.add((d % 7) + 1);
+  }
   return {
-    days: [day, (day % 7) + 1], // 更新日 + 次日
+    days: [...days],
     offset: (clockTime.h * 60 + clockTime.m) * 60 * 1000,
     len: WINDOW_HOURS * 3600 * 1000,
   };
@@ -189,23 +211,29 @@ export function nextWindowStart(sub, nowTs = Date.now()) {
  *   - 填了更新日、没填时刻 → 更新日和次日（对付延迟上传）整天密查，其余降到 6 小时一次
  *   - 填了更新日 + 时刻 → 只在「那个点起 6 小时」和「次日同一段」密查，其余低频
  * 站点只看得到「更新日」「更新时刻」这两个信号，比按日历定点更稳：晚发两小时也不会空等。
+ *
+ * opts.pending = 本次还缺几集。缺着集就别按低频睡——补历史缺集、一晚两集分批上线，
+ * 都靠「还缺就接着查」才追得上；否则 6 小时一觉醒来只补了 3 集。
  */
-export function nextDelay(sub, cfg = {}, nowTs = Date.now()) {
+export function nextDelay(sub, cfg = {}, nowTs = Date.now(), opts = {}) {
   const base = Math.max(10, Number(cfg.intervalMinutes) || 60);
-  const day = Number(sub?.updateDay) || 0;
-  if (day < 1 || day > 7) return base;
-
   const updateInt = Math.max(10, Number(cfg.updateIntervalMinutes) || 30);
   const offInt = Math.max(base, Number(cfg.offIntervalMinutes) || 360);
+  const pending = Math.max(0, Number(opts.pending) || 0);
+  const ds = subDays(sub);
+  if (!ds.length) return pending ? Math.min(base, updateInt) : base;
 
   if (!parseClock(sub?.updateTime)) {
     const wd = weekdayOf(nowTs);
-    const dayAfter = (day % 7) + 1;
-    if (wd === day || wd === dayAfter) return Math.max(10, Math.min(base, updateInt));
-    return offInt;
+    const near = ds.some((d) => wd === d || wd === (d % 7) + 1);
+    if (near) return Math.max(10, Math.min(base, updateInt));
+    return pending ? updateInt : offInt;
   }
 
   if (inUpdateWindow(sub, nowTs)) return updateInt;
+
+  // 还有缺集：不睡长觉，接着找（一晚两集里第二集常在窗口后才上线）
+  if (pending) return updateInt;
 
   // 窗口外：如果下一个窗口比「低频间隔」来得更早，就精确睡到窗口开始，
   // 否则 19:00 检查完设成 01:00，整段 20:00 的发布高峰就被跳过了。
@@ -276,7 +304,7 @@ export async function runCheck(id, { force = false } = {}) {
     // 用户没填更新日、TMDB 又知道下一集哪天播 → 替他填上，调度自动变成「那天密查」。
     // 只在用户没填时做：填了就是用户的意思，不能被 TMDB 覆盖。
     let autoDay = 0;
-    if (!sub.updateDay && tm?.nextAirDate) {
+    if (!subDays(sub).length && tm?.nextAirDate) {
       const wd = weekdayOfDate(tm.nextAirDate);
       if (wd >= 1 && wd <= 7) {
         autoDay = wd;
@@ -285,7 +313,7 @@ export async function runCheck(id, { force = false } = {}) {
       }
     }
     // 本次计算「下次多久查」时就用上刚推出来的更新日，否则第一轮还是匀速
-    const after = autoDay ? { ...sub, updateDay: autoDay } : sub;
+    const after = autoDay ? { ...sub, updateDays: [autoDay], updateDay: autoDay } : sub;
     const metaPatch = tm ? { tmdbMeta: tm } : {};
     if (!to) {
       const msg = '站点、TMDB 都没给出集数，无法判断该补到第几集。请手动填「总共多少集」后重试';
@@ -305,7 +333,7 @@ export async function runCheck(id, { force = false } = {}) {
       const msg = `齐全：本地 ${have.episodes.length} 集（${have.files} 个文件），目标 ${to} 集`;
       patchSub(sub.id, {
         ...metaPatch,
-        ...(autoDay ? { updateDay: autoDay } : {}),
+        ...(autoDay ? { updateDays: [autoDay], updateDay: autoDay } : {}),
         lastCheckAt: Date.now(),
         nextCheckAt: Date.now() + nextDelay(after, cfg) * 60 * 1000,
         lastResult: msg,
@@ -315,7 +343,10 @@ export async function runCheck(id, { force = false } = {}) {
       return { ok: true, message: msg, downloaded: 0, summary: { have: have.episodes.length, to, missing: 0 } };
     }
 
-    const limit = Math.max(1, Math.min(cfg.maxPerRun || 3, missing.length));
+    // 「每晚更两集」的剧，一次检查至少要把这一晚的量拿走；maxPerRun 是上限保护，
+    // 两者取大——否则用户把 maxPerRun 调成 1 时，第二集要等到下一轮才动。
+    const perNight = Math.max(1, Math.min(3, Number(sub.episodesPerNight) || 1));
+    const limit = Math.max(1, Math.min(Math.max(Number(cfg.maxPerRun) || 3, perNight), missing.length));
     const batch = missing.slice(0, limit);
     let downloaded = 0;
     const sent = { ...sub.sent };
@@ -372,10 +403,11 @@ export async function runCheck(id, { force = false } = {}) {
 
     bumpDaily();
     const msg = `本地 ${have.episodes.length} 集（${have.files} 个文件） / 目标 ${to} 集 / 缺 ${missing.length} 集 / 本次下发 ${downloaded} 集`;
-    const nextAt = Date.now() + nextDelay(after, cfg) * 60 * 1000;
+    // 还缺着集就保持密查：补历史缺集、一晚两集分批上线都靠这个，别一觉睡 6 小时
+    const nextAt = Date.now() + nextDelay(after, cfg, Date.now(), { pending: missing.length - downloaded }) * 60 * 1000;
     patchSub(sub.id, {
       ...metaPatch,
-      ...(autoDay ? { updateDay: autoDay } : {}),
+      ...(autoDay ? { updateDays: [autoDay], updateDay: autoDay } : {}),
       sent,
       lastCheckAt: Date.now(),
       nextCheckAt: nextAt,

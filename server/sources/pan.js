@@ -271,7 +271,7 @@ export async function resolveShare(rawUrl, passcode = '') {
     share = { provider, api, pwdId, stoken, passcode, cookieSet: Boolean(cookie), tokens: {}, files };
     for (const f of files) share.tokens[f.id] = f.fidToken || '';
     title = `网盘分享 · ${files.length} 个文件`;
-    if (!cookie) notes.push('看列表不需要登录；要直接下载到 NAS，请到「设置 → 资源接入 → 网盘解析」填一次浏览器 Cookie。');
+    if (!cookie) notes.push('看列表不需要登录；要直接下载到 NAS，请到「设置 → 片源与网盘 → 网盘解析」填一次浏览器 Cookie。');
     if (!files.length) notes.push('这个分享里没读到文件，可能已失效或需要提取码。');
     return { provider, title, files: sortFiles(files), needCookie: !cookie, notes, share };
   }
@@ -309,7 +309,7 @@ export async function resolveDownloadUrls(share, ids) {
 
   if (share.provider === 'quark' || share.provider === 'uc') {
     const cookie = panCookie();
-    if (!cookie) throw new Error('这类网盘下载需要登录态，请到「设置 → 资源接入 → 网盘解析」填一次浏览器 Cookie');
+    if (!cookie) throw new Error('这类网盘下载需要登录态，请到「设置 → 片源与网盘 → 网盘解析」填一次浏览器 Cookie');
     const api = share.api || apiBase(share.provider);
     const call = async (stoken) => {
       const url = `${api}/1/clouddrive/file/share/download?pr=ucpro&fr=pc`;

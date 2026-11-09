@@ -62,6 +62,20 @@ function day(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
 }
 
+/**
+ * 更新日：1~7 = 周一~周日，可多选（有的剧一周更两天）。
+ * 去重、排序、丢弃越界值——脏值会让调度算出「永远不在窗口内」。
+ */
+function days(v) {
+  const arr = Array.isArray(v) ? v : v ? [v] : [];
+  const set = new Set();
+  for (const x of arr) {
+    const d = Math.floor(num(x));
+    if (d >= 1 && d <= 7) set.add(d);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
 /** TMDB 缓存：形状固定，字段缺了就当不知道，别让界面渲染出 undefined */
 function normalizeTmdbMeta(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -92,6 +106,13 @@ export function normalize(raw) {
   const aliases = Array.isArray(raw.aliases)
     ? [...new Set(raw.aliases.map((x) => str(x, 80).trim()).filter(Boolean))].slice(0, 8)
     : [];
+  // 新版存数组（一周更两天能都填上）；老数据只有单值 updateDay，迁移到数组里
+  const updateDays = days(raw.updateDays);
+  if (!updateDays.length) {
+    const one = Math.min(7, Math.max(0, Math.floor(num(raw.updateDay))));
+    if (one) updateDays.push(one);
+  }
+
   const sent = raw.sent && typeof raw.sent === 'object' && !Array.isArray(raw.sent) ? raw.sent : {};
   const cleanSent = {};
   for (const [k, v] of Object.entries(sent)) {
@@ -121,10 +142,14 @@ export function normalize(raw) {
     startEpisode: Math.max(1, num(raw.startEpisode, 1)),
     endEpisode: Math.max(0, num(raw.endEpisode)),
     quality: [2160, 1080, 720, 480].includes(Number(raw.quality)) ? Number(raw.quality) : 1080,
-    // 更新日：0=不指定（匀速轮询），1~7=周一~周日。周更剧填上能省掉大量空跑请求
-    updateDay: Math.min(7, Math.max(0, Math.floor(num(raw.updateDay)))),
+    // 更新日：1~7=周一~周日，可多选。空数组=不指定（匀速轮询）
+    updateDays,
+    // 旧字段留着，值取第一天，方便只看单值的旧代码和测试继续跑
+    updateDay: updateDays[0] || 0,
     // 更新时刻：填了才按「这个点之后才开始密查」，留空则更新日整天密查（老行为）
     updateTime: clock(raw.updateTime),
+    // 每晚更新几集：一晚两集的剧，一次检查要能一起下，卡片上也写清楚
+    episodesPerNight: Math.min(3, Math.max(1, Math.floor(num(raw.episodesPerNight, 1)))),
     enabled: raw.enabled !== false,
     createdAt: num(raw.createdAt, Date.now()),
     lastCheckAt: num(raw.lastCheckAt),
@@ -160,7 +185,7 @@ export function addSub(input) {
 }
 
 /** 只允许改这几项，其余（sent/log/统计）由程序维护，避免前端误写 */
-const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDay', 'updateTime', 'enabled'];
+const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDays', 'updateDay', 'updateTime', 'episodesPerNight', 'enabled'];
 
 export function updateSub(id, patch) {
   const db = loadSubs();
@@ -170,6 +195,11 @@ export function updateSub(id, patch) {
   for (const k of EDITABLE) if (patch && k in patch) clean[k] = patch[k];
   // 解绑 TMDB 时把缓存一起清掉：留着的话卡片还会显示上一部剧的「下一集」
   if ('tmdbId' in clean && !Number(clean.tmdbId)) clean.tmdbMeta = null;
+  // 只发 updateDay（单值）的老前端：转成数组，否则会被已存的 updateDays 压住改了不生效
+  if ('updateDay' in clean && !('updateDays' in clean)) {
+    const one = Math.floor(Number(clean.updateDay)) || 0;
+    clean.updateDays = one >= 1 && one <= 7 ? [one] : [];
+  }
   const next = normalize({ ...item, ...clean, id: item.id, sent: item.sent, log: item.log });
   if (!next) throw new Error('修改后的订阅信息不合法');
   Object.assign(item, next);

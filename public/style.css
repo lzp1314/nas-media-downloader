@@ -151,9 +151,11 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 }
 .hero p { margin: 0 auto 26px; max-width: 460px; color: var(--muted); font-size: 16.5px; line-height: 1.8; }
 /* 首页热播推荐：剧集 / 电影 / 动漫三组 */
-.hot-wrap { display: block; width: 100%; max-width: 760px; margin: 6px auto 0; text-align: left; }
+/* 整块（标题 + 三行剧名）用 fit-content 居中，标题跟着左对齐，
+   和下方标签列落在同一条左边缘。原来标题单独居中、内容左对齐，两条中线对不上。 */
+.hot-wrap { display: block; width: fit-content; max-width: 100%; margin: 6px auto 0; text-align: left; }
 .hot-wrap[hidden] { display: none; }
-.hot-head { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 12px; }
+.hot-head { display: flex; align-items: center; justify-content: flex-start; gap: 10px; margin-bottom: 12px; }
 .hot-title { font-size: 15.5px; font-weight: 600; color: var(--text); }
 .hot-time { font-size: 14px; color: var(--dim); }
 .hot-refresh {
@@ -163,9 +165,17 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 }
 .hot-refresh:hover { color: var(--text); border-color: var(--line-2); background: var(--surface-2); }
 .hot-refresh:disabled { opacity: .55; cursor: default; }
-.hot-groups { display: flex; flex-direction: column; gap: 9px; }
-.hot-group { display: flex; align-items: flex-start; gap: 12px; }
-.hot-group-label { flex: 0 0 76px; padding-top: 7px; font-size: 14.5px; color: var(--muted); white-space: nowrap; }
+/* 三行「标签 + 剧名」用两列网格：标签列宽由最长标签决定、内容列左对齐。
+   margin 不再 auto——块已经居中，网格再居中会让标签列离开标题那条左边缘。 */
+.hot-groups {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  width: fit-content;
+  max-width: 100%;
+  gap: 9px 12px;
+}
+.hot-group { display: contents; }
+.hot-group-label { padding-top: 7px; font-size: 14.5px; color: var(--muted); white-space: nowrap; }
 .hot-group-label::before {
   content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
   margin-right: 6px; vertical-align: 1px; background: var(--accent);
@@ -183,8 +193,12 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   color: var(--text); border-color: var(--accent); background: var(--surface-2); transform: translateY(-1px);
 }
 @media (max-width: 760px) {
-  .hot-wrap { margin-top: 2px; }
-  .hot-group { flex-direction: column; gap: 3px; }
+  /* 窄屏退回纵向堆叠，宽度交给父容器，fit-content 在这里会算出奇怪的值 */
+  .hot-wrap { margin-top: 2px; width: 100%; }
+  /* 窄屏一列放两列网格会挤：退回「标签在上、剧名在下」的堆叠 */
+  .hot-groups { display: block; }
+  .hot-group { display: flex; flex-direction: column; gap: 3px; }
+  .hot-group + .hot-group { margin-top: 9px; }
   .hot-group-label { flex: none; padding-top: 0; font-size: 14px; }
   .hot-chips button { padding: 5px 10px; font-size: 14.5px; max-width: 140px; }
 }
@@ -251,7 +265,13 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 }
 .item h3 .yr { margin-left: 7px; color: var(--dim); font-size: 15px; font-weight: 400; }
 .item .line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 14.5px; color: var(--muted); }
-.item .sub { margin-top: 4px; font-size: 14.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 副标题兼作 .sub 这个类名：订阅卡片样式已收窄到 .subs > .sub，
+   这里再显式清一遍，避免以后有人把 .sub 写回全局又套上边框。 */
+.item .sub {
+  margin-top: 4px; font-size: 14.5px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0; border: 0; border-radius: 0; background: none;
+}
 
 .src {
   display: inline-flex; align-items: center; gap: 4px;
@@ -412,7 +432,10 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 
 /* ---------------- 剧集订阅 ---------------- */
 .subs { display: flex; flex-direction: column; gap: 9px; }
-.sub {
+/* 卡片的边框底色只该作用在订阅列表里。`.sub` 这个类名被搜索结果副标题、
+   弹窗提示小字（<span class="sub">）共用了，写成全局就会给那些小字套上边框，
+   目录弹窗里「订阅保存到 + 路径」就是这么变成一张小卡片、文字溢出来的。 */
+.subs > .sub {
   padding: 13px 15px; border: 1px solid var(--line);
   border-radius: 12px; background: var(--surface);
 }
@@ -495,6 +518,29 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .field .w110 { flex: 0 0 110px; min-width: 110px; }
 .field .w120 { flex: 0 0 120px; min-width: 120px; }
 .field .w140 { flex: 0 0 140px; min-width: 140px; }
+/* 密钥框 + 眼睛：wrapper 撑宽度，按钮浮在右侧，不占 input 的布局宽度 */
+.pw { position: relative; display: flex; flex: 1 1 auto; min-width: 0; }
+.pw input { flex: 1; min-width: 0; padding-right: 36px; }
+.pw .eye {
+  position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 28px; display: grid; place-items: center;
+  background: transparent; border: 0; border-radius: 7px;
+  color: var(--muted); cursor: pointer; padding: 0;
+}
+.pw .eye:hover { color: var(--text); background: var(--surface-3); }
+.pw.w110 { flex: 0 0 110px; min-width: 110px; }
+.pw.w120 { flex: 0 0 120px; min-width: 120px; }
+.pw.w140 { flex: 0 0 140px; min-width: 140px; }
+/* 更新日多选：七个方块，选几天点几天（下拉只能选一天，一周更两天的剧没法填） */
+.daypick { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; }
+.dchip {
+  width: 36px; height: 34px; padding: 0;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+  color: var(--muted); font-size: 15px; cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.dchip:hover { border-color: var(--line-2); color: var(--text); }
+.dchip.on { background: rgba(91, 140, 255, .16); border-color: rgba(91, 140, 255, .5); color: #cadcff; font-weight: 600; }
 .captcha { height: 34px; border-radius: 7px; background: #fff; cursor: pointer; flex: 0 0 auto; }
 .status { font-size: 15px; color: var(--muted); line-height: 1.8; }
 .status b { color: var(--text); }
@@ -504,8 +550,15 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   padding: 8px 11px; border: 1px solid var(--line); border-radius: 9px;
   margin-bottom: 6px; background: var(--surface-2); font-size: 15.5px;
 }
-.row-line .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-line .p small { display: block; color: var(--dim); font-size: 14px; }
+/* 引擎状态、片源说明、磁搜源地址都走这一行。原来是 nowrap+ellipsis，
+   但 small 是 block 子元素，ellipsis 对内联文本节点不生效，窄屏直接硬切：
+   「请重启容器」只剩「请重启容器;」。这里改成允许换行——这类文案（失败原因、
+   地址）本来就该看全，省一行字却看不见原因才是真糟糕。 */
+.row-line .p {
+  flex: 1; min-width: 0;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.row-line .p small { display: block; color: var(--dim); font-size: 14px; white-space: normal; }
 
 /* ---------------- 目录弹窗 ---------------- */
 .modal {
@@ -527,6 +580,10 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   overflow-y: auto; overscroll-behavior: contain;
 }
 @keyframes pop { from { transform: translateY(10px) scale(.98); opacity: 0; } }
+/* 弹窗是 flex column，子项默认可收缩。高度不够时会把提示块压得比内容还矮
+   （目录弹窗里那段路径就是这么溢出压到分类按钮上的）。让子项保持自身高度，
+   超出就交给 .dialog 自己滚。 */
+.dialog > * { flex-shrink: 0; }
 .dialog h3 { margin: 0 0 8px; font-size: 18.5px; }
 .tip { margin: 0 0 14px; color: var(--muted); font-size: 15px; line-height: 1.7; }
 .tip .pick { color: #a9c2ff; font-weight: 600; }
@@ -708,17 +765,36 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   .counter { margin-left: 0; width: 100%; }
   .notebar { overflow-wrap: anywhere; }
   .item .right .btn { padding: 5px 10px; font-size: 14.5px; }
+  /* 副标题「国漫 · 更新至第 128 集 · 评分 9.2」在 360 宽被单行省略成「… · 评…」，
+     评分和集数全看不见。窄屏放开两行，标题仍单行省略。 */
+  .item .sub {
+    white-space: normal; overflow: hidden;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
+  /* 任务文件名被状态、引擎、按钮挤到只剩 `凡人修仙传.2026.S0…`，认不出第几集。
+     窄屏让它独占一行、最多两行，第一行放状态与引擎标签。
+     用 overflow-wrap 而不是 break-all：后者会把 .mkv 劈成 .m / kv。 */
+  .task .nm {
+    flex: 1 1 100%; white-space: normal; overflow: hidden;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow-wrap: anywhere;
+  }
   .field label { flex: 0 0 100%; }
   .field input, .field select { flex: 1 1 100%; min-width: 0; }
+  .pw { flex: 1 1 100%; }
+  .daypick { flex: 1 1 100%; }
+  /* 「周一、周四 20:00 起 · 每晚 2 集」比原来的单日标签长得多：
+     窄屏让它自己占一行，别把剧名挤成省略号 */
+  .sub .top { flex-wrap: wrap; row-gap: 6px; }
+  .sub .nm { flex: 1 1 100%; }
   .dialog { padding: 16px 14px; }
-  /* 设置板块在窄屏改成横向选择列表 */
+  /* 设置板块在窄屏改成「按行排的按钮墙」：5 个板块排 3+2，比横向滚动更好找 */
   .settings-layout { grid-template-columns: 1fr; gap: 12px; }
   .settings-nav {
-    position: static; flex-direction: row; gap: 8px;
-    overflow-x: auto; padding-bottom: 2px;
+    position: static; flex-direction: row; flex-wrap: wrap; gap: 6px;
+    overflow: visible; padding-bottom: 2px;
   }
-  .settings-nav { overflow-x: visible; gap: 6px; }
-  .snav { flex: 1 1 0; min-width: 0; width: auto; padding: 8px 5px; gap: 5px; justify-content: center; }
+  .snav { flex: 1 1 calc(33.333% - 4px); min-width: 0; width: auto; padding: 8px 5px; gap: 5px; justify-content: center; }
   .snav .sn-ico { flex-basis: 22px; width: 22px; height: 22px; font-size: 13px; }
   .snav .sn-txt small { display: none; }
   .snav .sn-txt b { font-size: 13.5px; white-space: nowrap; }
@@ -947,4 +1023,18 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   .field label { flex: 0 0 62px; font-size: 14.5px; }
   .field input, .field select { flex: 1 1 130px; min-width: 0; }
   .field .w110, .field .w120, .field .w140 { flex: 1 1 90px; min-width: 0; }
+
+  /* qBittorrent 一行三框：360 宽下密码框被压到约 50px，只看得见「密码」两个字，
+     地址也显示不全。窄屏排成三行——地址独占一行、账号密码各占一半、
+     按钮另起一行。密码框约 126px，地址约 252px，都够用。 */
+  #qbitRow {
+    display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(0, 1fr);
+    gap: 7px; align-items: center; margin-bottom: 9px;
+  }
+  #qbitRow > label { grid-column: 1; grid-row: 1; }
+  #qbitUrl { grid-column: 2 / -1; grid-row: 1; }
+  #qbitUser { grid-column: 2; grid-row: 2; }
+  #qbitRow > .pw { grid-column: 3; grid-row: 2; }
+  #btnSaveQbit { grid-column: 1 / -1; grid-row: 3; justify-self: start; }
+  #qbitRow input, #qbitRow .pw { min-width: 0; width: 100%; flex: none; }
 }

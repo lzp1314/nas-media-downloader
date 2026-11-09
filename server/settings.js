@@ -261,6 +261,11 @@ export function mediaRoots() {
 export function publicSettings() {
   const s = loadSettings();
   const sites = siteStatus();
+  // 只下发末 4 位：让用户认出「存的是哪把钥匙」，又不至于把整串密钥摊在页面上
+  const tail = (v) => {
+    const x = String(v || '');
+    return x.length >= 8 ? x.slice(-4) : '';
+  };
   return {
     engine: s.engine,
     dirs: s.dirs,
@@ -285,13 +290,20 @@ export function publicSettings() {
       configured: Boolean(s.qbit.username && s.qbit.password),
     },
     aria2: { rpc: s.aria2.rpc, secretSet: Boolean(s.aria2.secret) },
-    pan: { configured: Boolean(s.pan?.cookie) },
-    douban: { cookieSet: Boolean(s.douban?.cookie), uid: s.douban?.uid || '', ready: Boolean(s.douban?.cookie) },
-    // 密钥本身永远不下发：只告诉前端「填没填」「用的哪种鉴权」「自定义了哪个域名」
+    pan: { configured: Boolean(s.pan?.cookie), cookieTail: tail(s.pan?.cookie) },
+    douban: {
+      cookieSet: Boolean(s.douban?.cookie),
+      uid: s.douban?.uid || '',
+      ready: Boolean(s.douban?.cookie),
+      cookieTail: tail(s.douban?.cookie),
+    },
+    // 密钥本身永远不下发：只告诉前端「填没填」「用的哪种鉴权」「末 4 位」「自定义了哪个域名」
     tmdb: {
       configured: Boolean(s.tmdb?.token || s.tmdb?.apiKey),
       auth: s.tmdb?.token ? 'token' : s.tmdb?.apiKey ? 'key' : '',
       base: s.tmdb?.base || '',
+      tokenTail: tail(s.tmdb?.token),
+      keyTail: tail(s.tmdb?.apiKey),
     },
     subscribe: s.subscribe,
     accessPasswordSet: Boolean(process.env.ACCESS_PASSWORD),

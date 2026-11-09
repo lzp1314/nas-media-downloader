@@ -173,6 +173,35 @@ export function looksLikeVideo(name) {
 const MIN_EPISODE_BYTES = 30 * 1024 * 1024;
 
 /**
+ * 从种子文件清单里挑出「这次真要下的那几个文件」。
+ *
+ * 站点上一个种子常常一次带好几集（[38-43集]），整包下会白占几 GB，
+ * 还可能把用户还没到的集提前下下来。这里按文件名读集号，只留需要的。
+ *
+ * @param {Array<{index:number, path:string}>} files 种子里的文件清单
+ * @param {number[]} want 这次要补的集
+ * @returns {string} 逗号分隔的序号（1 基，与引擎的 select-file 对齐）；空串表示不用裁剪
+ */
+export function pickFileIndexes(files, want) {
+  const list = Array.isArray(files) ? files : [];
+  const wantSet = new Set((want || []).map(Number));
+  if (!list.length || !wantSet.size) return '';
+  const covered = new Set();
+  const hit = [];
+  for (const f of list) {
+    const p = String(f?.path || '');
+    const eps = parseEpisodes(`${p} ${path.basename(p)}`).episodes;
+    for (const n of eps) covered.add(n);
+    if (eps.some((n) => wantSet.has(n))) hit.push(Number(f.index));
+  }
+  // 种子里本来就只有要的这几集，那就整包下，不用切
+  if (covered.size && [...covered].every((n) => wantSet.has(n))) return '';
+  // 一个文件都认不出来，或者认出来就是全部，都不折腾
+  if (!hit.length || hit.length >= list.length) return '';
+  return hit.filter((n) => Number.isInteger(n) && n > 0).join(',');
+}
+
+/**
  * 扫本地目录已有哪些集。
  * 判定基准放在文件系统上而不是数据库里：用户手动下的、别的工具下的都能算进来，
  * 也不怕配置丢失（Sonarr 也是扫媒体库而不是只信自己的记录）。

@@ -142,9 +142,33 @@ function byQuality(a, b, preferred) {
   return (b.quality || 0) - (a.quality || 0);
 }
 
+/**
+ * 详情页缓存：同一个条目在一次补集里会被反复问到（38、39、40…），
+ * 每次都重新请求详情既慢又容易触发站点限流，这里按条目 id 记一小段时间。
+ */
+const detailCache = new Map();
+const DETAIL_TTL = 5 * 60 * 1000;
+
+function cachedDetail(cand) {
+  const key = `${cand.source}:${cand.id}`;
+  const hit = detailCache.get(key);
+  if (hit && Date.now() - hit.at < DETAIL_TTL) return Promise.resolve(hit.value);
+  const p = (cand.source === 'b' ? bDetail(cand.url) : sourceA.detail(cand.id))
+    .then((v) => {
+      detailCache.set(key, { at: Date.now(), value: v });
+      if (detailCache.size > 60) detailCache.delete(detailCache.keys().next().value);
+      return v;
+    })
+    .catch((err) => {
+      detailCache.delete(key);
+      throw err;
+    });
+  return p;
+}
+
 /** 从源 A 的详情里挑出「明确包含这一集」的磁力/种子条目 */
 async function magnetFromDetail(cand, episode, notes, preferred = 0) {
-  const detail = cand.source === 'b' ? await bDetail(cand.url) : await sourceA.detail(cand.id);
+  const detail = await cachedDetail(cand);
   const groups = Array.isArray(detail?.groups) ? detail.groups : [];
   const hits = [];
   for (const g of groups) {
@@ -175,30 +199,82 @@ async function magnetFromDetail(cand, episode, notes, preferred = 0) {
 }
 
 /**
+ * 把「搜索层读不出集号的整包条目」展开成逐集候选。
+ *
+ * 这是补 1080P 的关键：连载剧在站点上常常只有一条「剧名」条目，
+ * 1080P 的种子全在它的详情页里；如果只信搜索层，这一档永远进不了候选，
+ * 最后只能吃磁力源里那种 4K 打包。
+ */
+async function fromPacks(packs, episode, notes, preferred) {
+  let best = null;
+  for (const cand of packs) {
+    if (!cand.id || !cand.source) continue;
+    if (cand.source !== 'a' && cand.source !== 'b') continue;
+    try {
+      const hit = await magnetFromDetail(cand, episode, notes, preferred);
+      if (!hit) continue;
+      const better = !best
+        || Number(hit.needVip) < Number(best.hit.needVip)
+        || (Number(hit.needVip) === Number(best.hit.needVip) && byQuality(hit, best.hit, preferred) < 0);
+      if (better) best = { hit, source: cand.source };
+    } catch (err) {
+      notes.push(`展开「${String(cand.title).slice(0, 20)}」的详情失败：${String(err.message || err).slice(0, 50)}`);
+    }
+  }
+  return best;
+}
+
+/**
  * 为某一集找到可下载的磁力。
- * 第一版只认「名字里明确写了集号」的资源，整包暂不自动添加（会重复下载已有集）。
+ *
+ * 挑法（按顺序）：
+ *   1. 索引里正好是偏好清晰度的候选（最快，不用再请求）
+ *   2. 展开整包条目的详情页，从里面按集号 + 偏好挑（1080P 通常只在这里）
+ *   3. 退而求其次：索引里按偏好排序后的其它候选（更高或更低清晰度）
  * @returns {{magnet?:string, torrentUrl?:string, name:string, hash:string, quality:number, source:string}|null}
  */
-export async function findSourceForEpisode(sub, index, episode, { notes = [] } = {}) {
+export async function findSourceForEpisode(sub, index, episode, { notes = [], packs = [] } = {}) {
   const preferred = Number(sub.quality) || 1080;
+
+  const use = (hit, source) => (hit.magnet
+    ? { magnet: hit.magnet, name: hit.name, hash: hit.hash || hashOf(hit.magnet), quality: hit.quality, source }
+    : { torrentUrl: hit.torrentUrl, name: hit.name, quality: hit.quality, source });
+
   const cands = [...(index.get(episode) || [])].sort((a, b) => byQuality(a, b, preferred));
 
+  // 1) 索引里正好符合偏好
   for (const cand of cands) {
+    if (!cand.magnet && (!cand.id || !cand.source)) continue;
+    if (cand.quality !== preferred) continue;
     if (cand.magnet) {
       return { magnet: cand.magnet, name: cand.title, hash: hashOf(cand.magnet), quality: cand.quality, source: cand.source };
     }
-    if (!cand.id || !cand.source) continue;
     try {
       const hit = await magnetFromDetail(cand, episode, notes, preferred);
-      await sleep(300 + Math.round(Math.random() * 500)); // 详情是逐个请求，给站点留点余地
-      if (!hit) continue;
-      if (hit.magnet) {
-        return { magnet: hit.magnet, name: hit.name, hash: hit.hash || hashOf(hit.magnet), quality: hit.quality, source: cand.source };
-      }
-      // 站点只给 .torrent：交给上层用种子缓存还原磁力
-      if (hit.torrentUrl) {
-        return { torrentUrl: hit.torrentUrl, name: hit.name, quality: hit.quality, source: cand.source };
-      }
+      await sleep(300 + Math.round(Math.random() * 500));
+      if (hit && (hit.magnet || hit.torrentUrl)) return use(hit, cand.source);
+    } catch (err) {
+      notes.push(`取「${String(cand.title).slice(0, 24)}」的种子失败：${String(err.message || err).slice(0, 60)}`);
+    }
+  }
+
+  // 2) 展开整包条目：偏好清晰度的单集/连播通常只在详情页里
+  if (packs.length) {
+    const found = await fromPacks(packs, episode, notes, preferred);
+    await sleep(300 + Math.round(Math.random() * 500));
+    if (found && (found.hit.magnet || found.hit.torrentUrl)) return use(found.hit, found.source);
+  }
+
+  // 3) 兜底：索引里其它清晰度的候选
+  for (const cand of cands) {
+    if (!cand.magnet && (!cand.id || !cand.source)) continue;
+    if (cand.magnet) {
+      return { magnet: cand.magnet, name: cand.title, hash: hashOf(cand.magnet), quality: cand.quality, source: cand.source };
+    }
+    try {
+      const hit = await magnetFromDetail(cand, episode, notes, preferred);
+      await sleep(300 + Math.round(Math.random() * 500));
+      if (hit && (hit.magnet || hit.torrentUrl)) return use(hit, cand.source);
     } catch (err) {
       notes.push(`取「${String(cand.title).slice(0, 24)}」的种子失败：${String(err.message || err).slice(0, 60)}`);
     }

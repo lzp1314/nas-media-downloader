@@ -311,16 +311,27 @@ export async function resolveDownloadUrls(share, ids) {
     const cookie = panCookie();
     if (!cookie) throw new Error('这类网盘下载需要登录态，请到「设置 → 片源与网盘 → 网盘解析」填一次浏览器 Cookie');
     const api = share.api || apiBase(share.provider);
+    const fids = targets.map((f) => f.fid || f.id);
+    // 文件令牌优先用条目自带的（解析那一刻就跟着文件走），再看按 id 建的索引表
+    const tokensOf = () => targets.map((f) => String(share.tokens?.[String(f.id)] || f.fidToken || ''));
+    /**
+     * 分享直链接口。
+     * 坑一：字段名是 share_fid_tokens，写成 fids_token 站点会当作没传令牌，
+     *       直接回「转存文件token校验异常」——这个提示跟真正的过期长得一样，很容易误判。
+     * 坑二：路径在 share/sharepage/download，不是 file/share/download。
+     */
     const call = async (stoken) => {
-      const url = `${api}/1/clouddrive/file/share/download?pr=ucpro&fr=pc`;
+      const url = `${api}/1/clouddrive/share/sharepage/download?pr=ucpro&fr=pc&uc_param_str=`;
+      const tokens = tokensOf();
       return httpRequest(url, {
         method: 'POST',
         headers: quarkHeaders(api, true),
         body: JSON.stringify({
-          fids: targets.map((f) => f.fid || f.id),
+          fids,
           pwd_id: share.pwdId,
           stoken,
-          fids_token: targets.map((f) => share.tokens?.[String(f.id)] || ''),
+          share_fid_tokens: tokens,
+          fids_token: tokens, // 兼容部分镜像站的旧字段名
         }),
         timeout: 15000,
       });
@@ -328,18 +339,37 @@ export async function resolveDownloadUrls(share, ids) {
     const parse = (res) => {
       let j;
       try { j = JSON.parse(res.text); } catch { throw new Error('直链接口没返回 JSON'); }
-      if (String(j.status) !== '200') throw new Error(String(j.message || '取直链失败').slice(0, 80));
-      const list = Array.isArray(j.data) ? j.data : [];
+      if (String(j.status) !== '200') {
+        const msg = String(j.message || '取直链失败');
+        if (/token|令牌/i.test(msg)) {
+          throw new Error(`${msg.slice(0, 60)}（分享令牌与文件令牌不是同一次取到的）`);
+        }
+        throw new Error(msg.slice(0, 80));
+      }
+      // 返回形状有两种：data 是数组（每个带 download_url），或 data 直接带一个 download_url
+      const list = Array.isArray(j.data) ? j.data : j.data ? [j.data] : [];
       return list.map((d) => String(d.download_url || d.url || '')).filter((u) => /^https?:\/\//i.test(u));
+    };
+    /** stoken 换新后必须重拉一次文件列表：文件令牌是跟 stoken 绑定的，只换 stoken 会继续报校验异常 */
+    const refresh = async () => {
+      const fresh = await quarkToken(api, share.pwdId, share.passcode).catch(() => '');
+      if (!fresh) throw new Error('分享令牌已过期，请重新解析一次链接');
+      share.stoken = fresh;
+      const listed = await quarkDetail(api, share.pwdId, fresh, '0').catch(() => []);
+      const map = new Map();
+      for (const f of listed) map.set(String(f.fid || f.id), String(f.fidToken || ''));
+      share.tokens = share.tokens || {};
+      for (const f of share.files || []) {
+        const t = map.get(String(f.fid || f.id)) || map.get(String(f.id));
+        if (t) share.tokens[f.id] = t;
+      }
     };
     let urls = [];
     try {
       urls = parse(await call(share.stoken));
-    } catch {
-      const fresh = await quarkToken(api, share.pwdId, share.passcode).catch(() => '');
-      if (!fresh) throw new Error('分享令牌已过期，请重新解析一次链接');
-      share.stoken = fresh;
-      urls = parse(await call(fresh));
+    } catch (first) {
+      await refresh();
+      urls = parse(await call(share.stoken));
     }
     if (!urls.length) throw new Error('这次没拿到下载直链，可能登录态已失效，或该网盘限制了非客户端下载');
     const headers = [

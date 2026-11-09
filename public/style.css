@@ -658,6 +658,33 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.err { border-color: #4a2b30; color: #ff9aa2; }
 
+/* 自动复制被浏览器拦住时，把链接摊出来让人自己选中 */
+.copybox {
+  position: fixed; left: 50%; bottom: 88px; z-index: 91;
+  transform: translateX(-50%);
+  width: min(92vw, 560px); display: flex; gap: 8px; align-items: center;
+  padding: 10px; border-radius: 12px;
+  background: #1b1f2b; border: 1px solid var(--line-2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+}
+.copybox-input {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--surface-2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 15px;
+}
+
+/* 解析弹窗里「种子名与这一行对不上」的提醒 */
+.link-warn {
+  display: none;
+  margin: 8px 0 2px; padding: 10px 12px; border-radius: 10px;
+  font-size: 15px; line-height: 1.6;
+  background: rgba(255, 120, 120, .08);
+  border: 1px solid rgba(255, 120, 120, .35);
+  color: #ffb3b3;
+}
+.link-warn.show { display: block; }
+.link-warn b { color: #ff8f8f; }
+
 /* ---------------- 磁力搜索源 ---------------- */
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 15px; white-space: nowrap; }
 .chk input, .sw input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }

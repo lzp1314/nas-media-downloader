@@ -67,6 +67,57 @@ function toast(msg, isErr = false) {
   el._t = setTimeout(() => (el.className = 'toast'), 2800);
 }
 
+/**
+ * 复制到剪贴板。
+ *
+ * 浏览器只允许安全上下文（https / localhost）用 navigator.clipboard；
+ * 本程序多数是 http://内网IP:9696 打开，那里 clipboard 直接是 undefined，
+ * 所以必须留一条 execCommand 的老路，否则一点就只弹「复制失败」。
+ */
+async function copyText(text) {
+  const s = String(text || '');
+  if (!s) return false;
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(s);
+      return true;
+    } catch {
+      /* 权限被拒或 iframe 限制，落到下面 */
+    }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = s;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, s.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+/** 自动复制被拦住时，把链接摊在屏幕下方让用户手动选中 */
+function showCopyBox(text) {
+  const old = document.querySelector('.copybox');
+  if (old) old.remove();
+  const box = document.createElement('div');
+  box.className = 'copybox';
+  box.innerHTML = `<input class="copybox-input" readonly value="${esc(text)}" />
+    <button class="btn ghost sm" type="button">关闭</button>`;
+  document.body.appendChild(box);
+  const input = box.querySelector('input');
+  input.focus();
+  input.select();
+  box.querySelector('button').addEventListener('click', () => box.remove());
+  setTimeout(() => box.remove(), 20000);
+}
+
 function fmtSize(n) {
   const v = Number(n) || 0;
   if (v <= 0) return '0 B';
@@ -654,7 +705,7 @@ function renderResources(data, item) {
         link = await grabMagnet(btn);
         if (!link) return;
       }
-      openLinkModal(link, { torrentUrl: btn.dataset.torrent || '' });
+      openLinkModal(link, { torrentUrl: btn.dataset.torrent || '', expect: btn.dataset.name || '' });
     }),
   );
   const seedLogin = $('seedLogin');
@@ -665,12 +716,14 @@ function renderResources(data, item) {
   if (paste) paste.addEventListener('click', () => openLinkModal(''));
   $('sBody').querySelectorAll('[data-copy]').forEach((btn) =>
     btn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(btn.dataset.copy);
-        toast('链接已复制，去网盘打开');
-      } catch {
-        toast('复制失败，请手动长按选择', true);
+      const link = btn.dataset.copy || '';
+      if (await copyText(link)) {
+        // 复制成功后用户去迅雷/网盘客户端粘贴即可；迅雷客户端默认会自己读剪贴板
+        toast('链接已复制，到迅雷或网盘客户端里粘贴即可');
+        return;
       }
+      showCopyBox(link);
+      toast('浏览器不让自动复制，链接已选中，手动按 Ctrl+C', true);
     }),
   );
 }
@@ -752,6 +805,11 @@ function openLinkModal(text = '', opts = {}) {
   // 资源列表里的 .torrent 直链按种子解析；用户手动改了输入框就回到普通链接解析
   state.linkTorrent = opts.torrentUrl || '';
   state.linkOrigin = text || '';
+  // 这一行本该是哪部片：解析出来的种子名跟它对不上时提示，避免下错片
+  state.linkExpect = opts.expect || '';
+  $('linkWarn').hidden = true;
+  $('linkWarn').classList.remove('show');
+  $('linkWarn').innerHTML = '';
   if (text) doLinkResolve();
   else setTimeout(() => $('linkInput').focus(), 30);
 }
@@ -773,11 +831,57 @@ function stopLinkPoll() {
   }
 }
 
+/**
+ * 片名相似度：只用来判断「这条种子里到底是不是这一部」。
+ * 中文按字重合，英文/数字按词重合；任一边字数太少就不下结论（宁可放过，不要误报）。
+ */
+function titleChars(s) {
+  const t = String(s || '').replace(/\[[^\]]*\]|【[^】]*】|\([^)]*\)|（[^）]*）|<[^>]*>/g, ' ');
+  return {
+    cjk: new Set(t.match(/[\u4e00-\u9fa5]/g) || []),
+    word: new Set(t.toLowerCase().match(/[a-z0-9]{2,}/g) || []),
+  };
+}
+
+function titleSimilar(a, b) {
+  const A = titleChars(a);
+  const B = titleChars(b);
+  if (A.cjk.size >= 3 && B.cjk.size >= 3) {
+    const [small, big] = A.cjk.size <= B.cjk.size ? [A.cjk, B.cjk] : [B.cjk, A.cjk];
+    let hit = 0;
+    for (const c of small) if (big.has(c)) hit += 1;
+    return hit / small.size;
+  }
+  if (A.word.size >= 2 && B.word.size >= 2) {
+    const [small, big] = A.word.size <= B.word.size ? [A.word, B.word] : [B.word, A.word];
+    let hit = 0;
+    for (const w of small) if (big.has(w)) hit += 1;
+    return hit / small.size;
+  }
+  return 1; // 判断不了就当作一致
+}
+
+function checkLinkTitle(r) {
+  const expect = String(state.linkExpect || '').trim();
+  const got = String(r?.title || '').trim();
+  const box = $('linkWarn');
+  if (!expect || !got || titleSimilar(expect, got) >= 0.5) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.classList.add('show');
+  box.innerHTML = `<b>这条种子里不是这一部</b><br />
+    名单写的是「${esc(expect)}」，种子里却是「${esc(got)}」。<br />
+    多半是站点把种子配错了行，建议返回换一条；确实要下也可以继续。`;
+}
+
 function showLinkResult(r) {
   r.selected = new Set();
   state.link = r;
   $('linkStatus').innerHTML = `<b>${esc(r.title)}</b> · 共 ${(r.files || []).length} 个文件` +
     (r.notes?.length ? `<br /><span class="sub">${r.notes.map(esc).join('<br />')}</span>` : '');
+  checkLinkTitle(r);
   if (!r.files?.length) {
     $('linkDownload').disabled = true;
     return;

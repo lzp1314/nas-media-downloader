@@ -4,8 +4,9 @@ import { httpRequest, DEFAULT_UA } from '../lib/util.js';
 import { parseTorrentMeta } from '../lib/bencode.js';
 import { allowedRoots, loadSettings } from '../settings.js';
 import { listSubs, getSub, patchSub, pushLog } from './store.js';
-import { scanEpisodes, missingEpisodes } from './episodes.js';
+import { scanEpisodes, missingEpisodes, parseEpisodes, pickFileIndexes } from './episodes.js';
 import { buildEpisodeIndex, findSourceForEpisode, targetUpperBound } from './matcher.js';
+import { listTorrentFiles, readCachedTorrent } from '../sources/torrent.js';
 import { routeFor } from '../engine/index.js';
 import { tmdbReady, tvDetail } from '../sources/tmdb.js';
 
@@ -358,7 +359,7 @@ export async function runCheck(id, { force = false } = {}) {
       }
       let src = null;
       try {
-        src = await findSourceForEpisode(sub, built.index, ep, { notes });
+        src = await findSourceForEpisode(sub, built.index, ep, { notes, packs: built.packs || [] });
       } catch (err) {
         notes.push(`第 ${ep} 集找源失败：${String(err.message || err).slice(0, 80)}`);
       }
@@ -383,15 +384,35 @@ export async function runCheck(id, { force = false } = {}) {
       if (!magnet) continue;
 
       const route = routeFor('torrent');
+      // 一个种子常常一次带好几集（[38-43集] 这种）。只下这次要补的集，
+      // 否则要两集会连下六集，白占几 GB 还可能把后面的集提前占了。
+      const want = new Set(batch);
+      let selectFile = '';
+      let torrentB64 = '';
       try {
-        const r = await route.engine.add({ magnet, dir, hash });
+        const info = await listTorrentFiles(magnet);
+        const files = info.files || [];
+        selectFile = pickFileIndexes(files, [...want]);
+        // aria2 加磁力时还没元数据，select-file 会失效；有落盘种子就改走 addTorrent
+        if (selectFile && route.engine.name !== 'qbit') {
+          const buf = await readCachedTorrent(hash || info.hash).catch(() => null);
+          if (buf) torrentB64 = buf.toString('base64');
+        }
+      } catch {
+        /* 取不到清单就整包下，交给引擎自己的默认行为 */
+      }
+      try {
+        const args = torrentB64
+          ? { torrent: torrentB64, dir, selectFile }
+          : { magnet, dir, hash, selectFile };
+        const r = await route.engine.add(args);
         sent[ep] = {
           at: Date.now(),
           name: src.name || `第 ${ep} 集`,
           hash: r.hash || hash,
           state: 'ok',
           tries: 1,
-          note: r.already ? '已存在同种子任务' : '',
+          note: r.already ? '已存在同种子任务' : selectFile ? `只下第 ${[...want].join('、')} 集` : '',
         };
         if (!r.already) downloaded += 1;
         pushLog(sub, `第 ${ep} 集已交给 ${route.engine.name}：${String(src.name || '').slice(0, 60)}`);

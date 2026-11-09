@@ -14,6 +14,7 @@ const state = {
   dirs: null,
   flatDirs: [],
   selectedDir: '',
+  dirMode: 'download', // download | sub：同一个目录浏览器，确认按钮的作用不同
   pending: null,
   searchTimer: null,
   searchSeq: 0,
@@ -22,6 +23,8 @@ const state = {
   lastType: '',
   link: null,
   sheetItem: null,
+  tmdbTitle: '', // 选中的 TMDB 条目对应的剧名，用来发现「用户改了剧名但没重选条目」
+  tmdbConfigured: false,
 };
 
 /* ---------------- 基础工具 ---------------- */
@@ -923,6 +926,7 @@ $('linkDownload').addEventListener('click', () => {
 /* ---------------- 目录选择 ---------------- */
 async function openDirPicker(magnet, name, type, extra = {}) {
   state.pending = { magnet, name, ...extra };
+  state.dirMode = 'download';
   $('newSub').value = '';
   if (!state.dirs) await loadDirs();
   buildFlatDirs();
@@ -968,10 +972,21 @@ function renderDirDialog() {
   const cur = state.flatDirs.find((n) => n.path === sel);
   const roots = state.dirs?.roots || [];
   const inRoot = (p, rootPath) => p === rootPath || p.startsWith(`${rootPath.replace(/\/+$/, '')}/`);
+  const subMode = state.dirMode === 'sub';
+  const atRoot = roots.some((r) => r.path === sel);
 
-  $('dirTip').innerHTML = state.pending?.name
-    ? `保存「${esc(state.pending.name)}」到 <b class="pick">${esc(cur?.label || '下载目录')}</b><br /><span class="sub">${esc(sel)}</span>`
-    : `选择保存位置 <b class="pick">${esc(cur?.label || '下载目录')}</b><br /><span class="sub">${esc(sel)}</span>`;
+  if (subMode) {
+    // 订阅扫的是「这部剧的文件夹」，停在片库根会把整库算成一部剧——不给确认
+    $('dirTip').innerHTML = atRoot
+      ? `这是片库根目录，<b class="pick">订阅不能用</b><br /><span class="sub">点下面的分类文件夹进去，再选到这部剧自己的目录</span>`
+      : `订阅保存到 <b class="pick">${esc(cur?.label || '目录')}</b><br /><span class="sub">${esc(sel)}</span>`;
+  } else {
+    $('dirTip').innerHTML = state.pending?.name
+      ? `保存「${esc(state.pending.name)}」到 <b class="pick">${esc(cur?.label || '下载目录')}</b><br /><span class="sub">${esc(sel)}</span>`
+      : `选择保存位置 <b class="pick">${esc(cur?.label || '下载目录')}</b><br /><span class="sub">${esc(sel)}</span>`;
+  }
+  $('dirConfirm').textContent = subMode ? '用这个目录' : '开始下载';
+  $('dirConfirm').disabled = subMode && atRoot;
 
   // 按存储库分组：左边是库名，右边是它的分类文件夹，层级一眼能看清
   $('dirChips').innerHTML = roots
@@ -989,7 +1004,7 @@ function renderDirDialog() {
             .join('')
         : '<span class="dirlib-empty">暂无分类文件夹</span>';
       return `<div class="dirlib${inside ? ' here' : ''}">
-        <button class="dirlib-hd${rootOn ? ' on' : ''}" data-path="${esc(r.path)}">
+        <button class="dirlib-hd${rootOn ? ' on' : ''}${subMode ? ' locked' : ''}"${subMode ? ' title="订阅要选到具体剧集文件夹"' : ` data-path="${esc(r.path)}"`}>
           <span class="ico">💾</span><span class="nm">${esc(r.label)}</span>
         </button>
         <div class="dirlib-bd">${kidHtml}</div>
@@ -1040,6 +1055,7 @@ function renderDirDialog() {
 $('dirCancel').addEventListener('click', () => {
   $('dirModal').hidden = true;
   state.pending = null;
+  state.dirMode = 'download';
 });
 
 $('btnMkdir').addEventListener('click', async () => {
@@ -1062,6 +1078,17 @@ $('btnMkdir').addEventListener('click', async () => {
 });
 
 $('dirConfirm').addEventListener('click', async () => {
+  // 订阅只是借用这个目录浏览器，选完回到订阅弹窗，不发起下载
+  if (state.dirMode === 'sub') {
+    if (!state.selectedDir) return toast('请选择目录', true);
+    if ((state.dirs?.roots || []).some((r) => r.path === state.selectedDir)) {
+      return toast('订阅要选到具体的剧集文件夹，不能用片库根目录', true);
+    }
+    setSubDir(state.selectedDir);
+    $('dirModal').hidden = true;
+    state.dirMode = 'download';
+    return;
+  }
   if (!state.pending) return;
   if (!state.selectedDir) return toast('请选择目录', true);
   const btn = $('dirConfirm');
@@ -1483,6 +1510,8 @@ async function loadSettingsView() {
     $('panStatus').textContent = panOk
       ? '已保存 Cookie；重新粘贴分享链接就能取直链下载。'
       : '未设置 Cookie：仍可查看分享里的文件列表，但不能直接下载到 NAS。';
+    renderDouban(s);
+    renderTmdb(s);
     renderIndexLine(data.index);
     renderDirList(s.dirs);
     loadDisk();
@@ -1727,6 +1756,119 @@ $('btnClearPan').addEventListener('click', async () => {
   }
 });
 
+function renderDouban(s) {
+  const ok = Boolean(s?.douban?.cookieSet);
+  const pill = $('doubanPill');
+  pill.textContent = ok ? '已设置' : '未设置';
+  pill.className = `pill ${ok ? 'ok' : ''}`;
+  // Cookie 永远不回显：接口只告诉「有没有」，输入框留空表示「不改」
+  $('doubanUid').value = s?.douban?.uid || '';
+  $('doubanStatus').textContent = ok
+    ? '已保存 Cookie：订阅里点「豆瓣查」能带回别名和总集数。'
+    : '未设置：订阅照常能用，只是自动补的集数、别名可能不准。';
+}
+
+$('btnSaveDouban').addEventListener('click', async () => {
+  const cookie = $('doubanCookie').value.trim();
+  if (!cookie) return toast('先粘贴 Cookie（留空点「保存」不会清除已保存的）', true);
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ douban: { cookie } }) });
+    $('doubanCookie').value = '';
+    toast('已保存豆瓣 Cookie');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnSaveDoubanUid').addEventListener('click', async () => {
+  const uid = $('doubanUid').value.trim();
+  try {
+    // 只发 uid：不带 cookie 字段，deepMerge 就不会把已存的 Cookie 抹掉
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ douban: { uid } }) });
+    toast(uid ? '已保存用户 id' : '已清空用户 id');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnClearDouban').addEventListener('click', async () => {
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ douban: { cookie: '' } }) });
+    $('doubanCookie').value = '';
+    toast('已清空');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+/* ---------------- TMDB ---------------- */
+function renderTmdb(s) {
+  const t = s?.tmdb || {};
+  const ok = Boolean(t.configured);
+  state.tmdbConfigured = ok;
+  const pill = $('tmdbPill');
+  pill.textContent = ok ? '已设置' : '未设置';
+  pill.className = `pill ${ok ? 'ok' : ''}`;
+  // 两个密钥框永远留空：接口只告诉「填没填」，留空表示「这次不改」
+  $('tmdbToken').value = '';
+  $('tmdbKey').value = '';
+  $('tmdbBase').value = t.base || '';
+  $('tmdbStatus').textContent = ok
+    ? `已保存密钥（${t.auth === 'token' ? '读访问令牌' : 'API Key'}）。订阅里点「TMDB 查」能带出总集数和下一集播出日。改的话直接填新的再保存即可。`
+    : '未设置：订阅照常能用，只是总集数、更新日得自己填。';
+}
+
+$('btnSaveTmdb').addEventListener('click', async () => {
+  const token = $('tmdbToken').value.trim();
+  const apiKey = $('tmdbKey').value.trim();
+  const base = $('tmdbBase').value.trim();
+  // 两个框都空、之前也没配过 → 等于什么没做，直接说清楚
+  if (!token && !apiKey && !state.tmdbConfigured) {
+    return toast('读令牌和 API Key 至少填一个', true);
+  }
+  const patch = { base };
+  if (token) patch.token = token;
+  if (apiKey) patch.apiKey = apiKey;
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ tmdb: patch }) });
+    toast(token || apiKey ? '已保存 TMDB 密钥' : '已保存 API 域名');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnClearTmdb').addEventListener('click', async () => {
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ tmdb: { token: '', apiKey: '', base: '' } }) });
+    toast('已清空 TMDB 配置');
+    loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$('btnTestTmdb').addEventListener('click', async () => {
+  const btn = $('btnTestTmdb');
+  btn.disabled = true;
+  const st = $('tmdbStatus');
+  st.textContent = '正在由 NAS 发请求（最长 25 秒）…';
+  try {
+    const r = await api('/api/tmdb/test', { method: 'POST' });
+    st.textContent = `连通：${r.ms} ms，用${r.auth === 'token' ? '读访问令牌' : ' API Key'}鉴权。`;
+    toast('TMDB 连通');
+  } catch (err) {
+    // 分清是「网络不通」还是「密钥不对」：这两种在 NAS 上的处理方式完全不同
+    st.textContent = `失败：${err.message}`;
+    toast('没连通，原因看上面那行', true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---------------- 设置板块切换 ---------------- */
 document.querySelectorAll('#settingsNav .snav').forEach((b) =>
   b.addEventListener('click', () => {
@@ -1736,7 +1878,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.14';
+let currentVersion = '1.2.16';
 
 function setVersion(v) {
   if (!v) return;
@@ -1813,6 +1955,24 @@ function subCard(s) {
     ? `<span class="day">${DOW_NAME[day]}${at ? ` ${esc(at)} 起` : '更新'}</span>`
     : '<span class="day off">未指定更新日</span>';
   const logs = (s.log || []).slice(-2).reverse();
+  // TMDB 那一行：状态 + 总集数 + 下一集日期。拿不到就整行不出现，不留空壳
+  const tm = s.tmdbMeta;
+  let tmLine = '';
+  if (tm && (tm.statusCn || tm.totalEpisodes || tm.nextAirDate)) {
+    const bits = [];
+    if (tm.statusCn) bits.push(tm.statusCn);
+    if (tm.totalEpisodes) bits.push(`共 ${tm.totalEpisodes} 集`);
+    // 多季剧每季都从第 1 集重数，只写「第 21 集」分不清是哪一季
+    const multi = Number(tm.totalSeasons) > 1 && Number(tm.nextAirSeason) > 0;
+    const epLabel = tm.nextAirEpisode
+      ? multi
+        ? `（S${tm.nextAirSeason}E${tm.nextAirEpisode}）`
+        : `（第 ${tm.nextAirEpisode} 集）`
+      : '';
+    if (tm.nextAirDate) bits.push(`下一集 ${tm.nextAirDate}${epLabel}`);
+    else if (tm.lastAirDate) bits.push(`上集 ${tm.lastAirDate}`);
+    tmLine = `<div class="line tm">TMDB：${esc(bits.join(' · '))}</div>`;
+  }
   return `<div class="sub${off ? ' off' : ''}" data-id="${esc(s.id)}">
   <div class="top">
     <div class="nm" title="${esc(s.title)}">${esc(s.title)}</div>
@@ -1821,6 +1981,8 @@ function subCard(s) {
   </div>
   <div class="line">${esc(last)}${pending ? ` · <span class="warn">${pending} 集下发失败</span>` : ''}</div>
   <div class="path" title="${esc(s.dir)}">${esc(s.dir)}</div>
+  ${tmLine}
+  ${s.rootBad ? '<div class="line warn">保存目录是片库根目录，集数会算成整个片库的量，点「编辑」改到这部剧自己的文件夹</div>' : ''}
   <div class="line">${esc(when)}</div>
   <div class="acts">
     <button class="btn sm" data-act="check"${busy ? ' disabled' : ''}>${busy ? '检查中…' : '立即检查'}</button>
@@ -1837,31 +1999,59 @@ function renderSubs(d) {
   const limit = stats.dailyLimit || 36;
   const used = stats.dailyUsed || 0;
   $('subStat').innerHTML = `共 ${subItems.length} 个 · 今日已检查 ${used}/${limit}`;
-  $('subList').innerHTML = subItems.map(subCard).join('');
+  $('subList').innerHTML = subItems.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir) })).join('');
   $('subEmpty').hidden = subItems.length > 0;
-  // 没配豆瓣 Cookie 时只提一句，不影响用（suggest 不需要登录）
+  // 没配 TMDB 就提一句：不影响补集，但集数和播出日历要自己看。
+  // 配了就不再唠叨——豆瓣只是备选，两个都有反而让人以为缺东西。
   const hint = $('subHint');
-  if (subItems.length && !d?.douban?.ready) {
+  const tmOk = Boolean(d?.tmdb?.ready);
+  if (subItems.length && !tmOk) {
     hint.hidden = false;
-    hint.textContent = '没填豆瓣 Cookie：自动补集数、别名可能不准。在设置 → 资源接入里填上更稳。';
+    const extra = d?.douban?.ready ? '' : '豆瓣也没配，别名准确度会差一些。';
+    hint.innerHTML = `没填 TMDB 密钥：总集数要自己填，也不会自动跟播出日历。${extra}<a href="#" id="subHintGo">去设置 → 资源接入填上</a>`;
+    $('subHintGo').addEventListener('click', (e) => {
+      e.preventDefault();
+      switchView('settings');
+      const btn = document.querySelector('#settingsNav .snav[data-panel="sources"]');
+      if (btn) btn.click();
+      setTimeout(() => $('tmdbToken')?.focus(), 120);
+    });
   } else {
     hint.hidden = true;
   }
 }
 
-function fillSubDirs(pick) {
-  const flat = state.flatDirs || [];
-  const sel = $('subDir');
-  if (!flat.length) {
-    sel.innerHTML = '<option value="">（还没有可用片库）</option>';
-    return;
-  }
-  sel.innerHTML = flat
-    .map((n) => `<option value="${esc(n.path)}">${'　'.repeat(n.depth)}${esc(n.label)}</option>`)
-    .join('');
-  if (pick && flat.some((n) => n.path === pick)) sel.value = pick;
-  else if (state.dirs?.defaultDir) sel.value = state.dirs.defaultDir;
+const isLibRoot = (p) => Boolean(p) && (state.dirs?.roots || []).some((r) => r.path === p);
+
+/** 「保存到」显示成「目录名 · 完整路径」，只读，点它或点「选择」都走目录浏览器 */
+function setSubDir(p) {
+  const v = String(p || '');
+  $('subDir').value = v;
+  const node = (state.flatDirs || []).find((n) => n.path === v);
+  const label = node?.label || v.split('/').filter(Boolean).pop() || '';
+  $('subDirText').value = v ? `${label} · ${v}` : '';
+  $('subDirText').title = v;
 }
+
+function openSubDirPicker(start) {
+  state.dirMode = 'sub';
+  state.pending = null;
+  $('newSub').value = '';
+  // 起点优先级：已有的保存目录 > 默认下载目录 > 第一个库。
+  // 起点若是片库根，自动往下带一层——一进弹窗就停在「不可选」的根目录上很别扭
+  const pick = [String(start || ''), state.dirs?.defaultDir || '', state.flatDirs[0]?.path || ''].find(Boolean) || '';
+  const usable = (p) => (isLibRoot(p) ? state.flatDirs.find((n) => n.parent === p)?.path || p : p);
+  state.selectedDir = usable(pick);
+  renderDirDialog();
+  $('dirModal').hidden = false;
+}
+
+$('btnPickSubDir').addEventListener('click', async () => {
+  if (!state.dirs) await loadDirs();
+  buildFlatDirs();
+  openSubDirPicker($('subDir').value);
+});
+$('subDirText').addEventListener('click', () => $('btnPickSubDir').click());
 
 function openSubModal(sub) {
   editingSubId = sub?.id || '';
@@ -1874,20 +2064,149 @@ function openSubModal(sub) {
   $('subQuality').value = String(sub?.quality || 1080);
   $('subDay').value = String(sub?.updateDay || 0);
   $('subTime').value = sub?.updateTime || '';
-  $('subFormTip').textContent = '';
-  fillSubDirs(sub?.dir);
+  $('subTmdbId').value = sub?.tmdbId ? String(sub.tmdbId) : '';
+  state.tmdbTitle = sub?.title || '';
+  setSubDir(sub ? sub.dir : defaultSubDir());
+  // 老订阅可能存的是片库根，进来就点明，不然下次检查又扫一遍全库
+  $('subFormTip').textContent = isLibRoot($('subDir').value)
+    ? '这个订阅的保存目录是片库根目录，会扫到整个片库、集数算不准。请点「选择」改成这部剧自己的文件夹。'
+    : '';
   $('subModal').hidden = false;
   setTimeout(() => $('subTitle').focus(), 30);
 }
 
+/** 默认下载目录如果是片库根，就不预填——订阅必须选到具体文件夹 */
+function defaultSubDir() {
+  const d = state.dirs?.defaultDir || '';
+  return d && !isLibRoot(d) ? d : '';
+}
+
 $('btnNewSub').addEventListener('click', () => {
-  fillSubDirs('');
   openSubModal(null);
 });
 
 $('subCancel').addEventListener('click', () => { $('subModal').hidden = true; });
 $('subModal').addEventListener('click', (e) => {
   if (e.target === $('subModal')) $('subModal').hidden = true;
+});
+
+/* ---------------- TMDB 选剧 ---------------- */
+const DOW_CN = ['', '一', '二', '三', '四', '五', '六', '日'];
+
+/** "2026-11-13" → 1~7；按本地时区构造，避免 UTC 解析导致退一天 */
+function weekdayOfDate(str) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || '').trim());
+  if (!m) return 0;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  return Number.isNaN(d.getTime()) ? 0 : d.getDay() || 7;
+}
+
+function openTmdbPick() {
+  const q = $('subTitle').value.trim();
+  if (!q) return toast('先在「剧名」里填剧名', true);
+  $('tmdbModal').hidden = false;
+  $('tmdbTip').textContent = `正在 TMDB 找「${q}」…`;
+  $('tmdbList').innerHTML = '';
+  searchTmdb(q);
+}
+
+async function searchTmdb(q) {
+  const tip = $('tmdbTip');
+  const list = $('tmdbList');
+  try {
+    const r = await api(`/api/tmdb/search?q=${encodeURIComponent(q)}`);
+    const items = r.items || [];
+    if (!items.length) {
+      tip.textContent = `TMDB 上没有「${q}」。国产剧、短剧收录不全，可以试试原名，或者改用「豆瓣查」。`;
+      return;
+    }
+    tip.textContent = `找到 ${items.length} 条，选一个（会带出总集数、别名和下一集播出日）：`;
+    list.innerHTML = items
+      .map(
+        (x) => `<button class="tmdb-item" data-id="${x.id}">
+  <span class="t"><b>${esc(x.name)}</b>${x.year ? `<i>${esc(x.year)}</i>` : ''}</span>
+  <span class="s">${esc(x.originalName || '')}${x.country ? ` · ${esc(x.country)}` : ''}</span>
+  ${x.overview ? `<span class="o">${esc(x.overview)}</span>` : ''}
+</button>`,
+      )
+      .join('');
+  } catch (err) {
+    // 没填密钥是最常见的一种，直接把路指给用户，别让他猜
+    if (/TMDB 密钥/.test(err.message)) {
+      tip.innerHTML = `${esc(err.message)}　<a href="#" id="tmdbGoKey">去填</a>`;
+      const go = $('tmdbGoKey');
+      if (go) {
+        go.addEventListener('click', (e) => {
+          e.preventDefault();
+          $('tmdbModal').hidden = true;
+          switchView('settings');
+          const b = document.querySelector('#settingsNav .snav[data-panel="sources"]');
+          if (b) b.click();
+          setTimeout(() => $('tmdbToken')?.focus(), 120);
+        });
+      }
+      return;
+    }
+    tip.textContent = err.message;
+  }
+}
+
+function applyTmdb(d) {
+  $('subTmdbId').value = String(d.id || '');
+  state.tmdbTitle = d.name || '';
+  if (d.name) $('subTitle').value = d.name;
+  // 站上的资源名常常是原名（英文/日文），拿它当搜索词命中率更高
+  if (d.originalName && d.originalName !== d.name) $('subKeyword').value = d.originalName;
+  if (d.totalEpisodes > 0) $('subTotal').value = d.totalEpisodes;
+
+  const bits = [];
+  if (d.totalEpisodes) bits.push(`共 ${d.totalEpisodes} 集`);
+  if (d.totalSeasons > 1) bits.push(`${d.totalSeasons} 季`);
+  if (d.statusCn) bits.push(d.statusCn);
+
+  // 只有「下一集已经排期」才动更新日；完结剧保持用户原来的选择
+  const wd = d.nextAirDate ? weekdayOfDate(d.nextAirDate) : 0;
+  if (wd) {
+    $('subDay').value = String(wd);
+    // 多季剧要带季号，否则「第 21 集」分不清是第几季的
+    const multi = Number(d.totalSeasons) > 1 && Number(d.nextAirSeason) > 0;
+    const epText = multi ? `S${d.nextAirSeason}E${d.nextAirEpisode}` : `第 ${d.nextAirEpisode} 集`;
+    bits.push(`下一集 ${d.nextAirDate} 周${DOW_CN[wd]}（${epText}）→ 更新日已设为周${DOW_CN[wd]}`);
+  } else if (d.lastAirDate) {
+    bits.push(`上集 ${d.lastAirDate}`);
+  }
+  $('subFormTip').textContent = bits.length ? `TMDB：${bits.join(' · ')}` : 'TMDB：这个条目没给集数';
+}
+
+$('btnTmdb').addEventListener('click', openTmdbPick);
+
+$('tmdbCancel').addEventListener('click', () => {
+  $('tmdbModal').hidden = true;
+});
+
+$('tmdbList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.tmdb-item');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  if (!id) return;
+  const tip = $('tmdbTip');
+  tip.textContent = '正在取详情…';
+  try {
+    const d = await api('/api/tmdb/lookup', { method: 'POST', body: JSON.stringify({ id }) });
+    applyTmdb(d);
+    $('tmdbModal').hidden = true;
+  } catch (err) {
+    tip.textContent = err.message;
+  }
+});
+
+// 改了剧名却没重新选条目：TMDB 数据就不再对得上，直接把 id 清掉，避免张冠李戴
+$('subTitle').addEventListener('input', () => {
+  if (!$('subTmdbId').value) return;
+  if ($('subTitle').value.trim() === state.tmdbTitle) return;
+  $('subTmdbId').value = '';
+  state.tmdbTitle = '';
+  $('subFormTip').textContent = '剧名改了，TMDB 条目已解绑：再用「TMDB 查」选一次才能带上播出日历';
 });
 
 $('btnDouban').addEventListener('click', async () => {
@@ -1924,12 +2243,15 @@ $('subSave').addEventListener('click', async () => {
     // 没选更新日就存不下时刻，避免留下一个看不出作用的孤儿值
     updateTime: dayValue ? ($('subTime').value || '') : '',
     totalEpisodes: Number($('subTotal').value) || 0,
+    // 永远发出去：0 表示「解绑」，不发明的话编辑时清空条目会失效（后端会沿用旧 id）
+    tmdbId: Number($('subTmdbId').value) || 0,
     startEpisode: Math.max(1, Number($('subFrom').value) || 1),
     endEpisode: Number($('subTo').value) || 0,
     quality: Number($('subQuality').value) || 1080,
   };
   if (!body.title) return toast('先填剧名', true);
-  if (!body.dir) return toast('没有可选的片库目录', true);
+  if (!body.dir) return toast('先点「选择」挑这部剧的保存目录', true);
+  if (isLibRoot(body.dir)) return toast('保存目录不能是片库根目录，请选到这部剧自己的文件夹', true);
   const btn = $('subSave');
   btn.disabled = true;
   try {

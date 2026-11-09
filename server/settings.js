@@ -90,6 +90,16 @@ function defaults() {
       cookie: '',
       uid: '',
     },
+    /**
+     * TMDB：比豆瓣更全的剧集元数据，能给出「下一集哪天播」。
+     * token/v4 与 apiKey/v3 填一个即可，两个都填则以 token 为准。
+     * base 留空表示自动在两个官方域名间切换（国内 api.themoviedb.org 会被 DNS 污染）。
+     */
+    tmdb: {
+      token: '',
+      apiKey: '',
+      base: '',
+    },
     /** 剧集订阅 */
     subscribe: {
       enabled: true,
@@ -156,6 +166,13 @@ function normalize(s) {
     dailyLimit: Math.min(48, Math.max(1, Number(sub.dailyLimit) || 36)),
   };
   s.douban = { cookie: String(s.douban?.cookie || ''), uid: String(s.douban?.uid || '').replace(/\D/g, '') };
+  // 密钥两端可能有换行/空格（从网页上复制很容易带上），不剪掉的话请求头会直接非法
+  s.tmdb = {
+    token: String(s.tmdb?.token || '').trim(),
+    apiKey: String(s.tmdb?.apiKey || '').trim(),
+    // 域名只留 scheme://host/路径，去掉结尾斜杠，允许用户填镜像
+    base: String(s.tmdb?.base || '').trim().replace(/\/+$/, ''),
+  };
   return s;
 }
 
@@ -270,6 +287,12 @@ export function publicSettings() {
     aria2: { rpc: s.aria2.rpc, secretSet: Boolean(s.aria2.secret) },
     pan: { configured: Boolean(s.pan?.cookie) },
     douban: { cookieSet: Boolean(s.douban?.cookie), uid: s.douban?.uid || '', ready: Boolean(s.douban?.cookie) },
+    // 密钥本身永远不下发：只告诉前端「填没填」「用的哪种鉴权」「自定义了哪个域名」
+    tmdb: {
+      configured: Boolean(s.tmdb?.token || s.tmdb?.apiKey),
+      auth: s.tmdb?.token ? 'token' : s.tmdb?.apiKey ? 'key' : '',
+      base: s.tmdb?.base || '',
+    },
     subscribe: s.subscribe,
     accessPasswordSet: Boolean(process.env.ACCESS_PASSWORD),
   };

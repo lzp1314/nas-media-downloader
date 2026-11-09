@@ -49,14 +49,46 @@ export function qualityRank(name) {
 const PACK_HINTS = /全集|全\s*\d+\s*集|合集|合集包|季[一-龥\d]|S\d{1,2}\s*(?:Complete|全)|Complete|更新至|打包|整季|第[一二三四五六七八九十\d]+季/i;
 
 /**
+ * 名字里的技术标记：编码器、分辨率、发行格式、音轨、年份。
+ *
+ * 片库里的电影文件名典型长这样：功夫女足.2026.2160p.WEB-DL.H265.DV.mkv
+ * 不先抹掉这些东西，「H265」会被文件名兜底读成第 265 集、「H264」读成第 264 集、
+ * 「1982」读成第 1982 集。目录一旦选在片库根，全库文件混在一起算，
+ * 目标集数就会凭空变成几百集——这正是「本地 32 集却显示目标 265 集」的来源。
+ */
+const NOISE_PATTERNS = [
+  /[xh]\.?\s?26[45]/gi, // x264 / H.265
+  /\b(?:hevc|avc|xvid|divx|av1|vp9)\b/gi,
+  /\b(?:2160|1080|720|576|480)\s?[pi]\b/gi, // 1080p / 720i
+  /\b(?:4k|uhd|fullhd)\b/gi,
+  /\b(?:web-?dl|web-?rip|blu-?ray|bdrip|hdtv|dvdrip|remux|hdcam|hdrip)\b/gi,
+  /\b(?:aac|ac3|eac3|dts(?:-hd)?|truehd|atmos|flac|opus|ddp?\s?\d(?:\.\d)?)\b/gi,
+  /\b(?:10|8)\s?bits?\b/gi,
+  /\b(?:hdr10|hdr|sdr|dolby\s?vision|dv)\b/gi,
+  // 年份：只抹四位数，且要求是独立的一段（前后不是数字），避免碰到「第2021集」
+  /(?:^|[^0-9])(?:19|20)\d{2}(?![0-9])/g,
+];
+
+function stripNoise(raw) {
+  let s = String(raw || '');
+  for (const re of NOISE_PATTERNS) s = s.replace(re, ' ');
+  return s;
+}
+
+/** 这些数字天生不像集号（编码器/分辨率），只在「文件名兜底」这种没上下文的分支里拦截 */
+const NOT_EPISODE = new Set([264, 265, 480, 576, 720, 1080, 2160, 4096]);
+
+/**
  * 解析一条资源名覆盖的集数。
  * @returns {{episodes:number[], pack:boolean, upTo:number, quality:number}}
  *   episodes 明确指向的集号；pack=true 表示这是多集整包，具体集数要靠种子文件清单确认；
  *   upTo 是「更新至 N 集」给出的上界，0 表示没有这个信息。
  */
 export function parseEpisodes(name) {
-  const s = String(name || '');
-  const quality = qualityRank(s);
+  const raw = String(name || '');
+  // 清晰度从原名取（去噪会把 1080p 抹掉），集号从去噪后的字符串取
+  const quality = qualityRank(raw);
+  const s = stripNoise(raw);
   const episodes = new Set();
   let pack = PACK_HINTS.test(s);
   let upTo = 0;
@@ -125,7 +157,8 @@ export function parseEpisodes(name) {
   // 6) 文件名兜底：01.mkv / 第01话.mp4 / 21 - xxx.mkv
   if (!episodes.size) {
     const file = s.match(/(?:^|[^0-9])(\d{1,4})\s*(?:[.、\-_]\s*[^.、\-_\s]{0,40})?\.(?:mkv|mp4|avi|rmvb|ts|mov|flv|wmv)$/i);
-    if (file) add(file[1]);
+    // 兜底没有「第…集」这种上下文，1080/264 这类数字多半是规格而不是集号
+    if (file && !NOT_EPISODE.has(Number(file[1]))) add(file[1]);
   }
 
   return { episodes: [...episodes].sort((a, b) => a - b), pack, upTo, quality };
@@ -146,7 +179,8 @@ const MIN_EPISODE_BYTES = 30 * 1024 * 1024;
  */
 export async function scanEpisodes(dir, { maxDepth = 3 } = {}) {
   const found = new Set();
-  let files = 0;
+  let files = 0; // 合格的视频文件数（认不认得出集号都算）
+  let matched = 0; // 其中有集号的
   let bytes = 0;
 
   const walk = async (current, depth) => {
@@ -171,16 +205,19 @@ export async function scanEpisodes(dir, { maxDepth = 3 } = {}) {
         continue;
       }
       if (size < MIN_EPISODE_BYTES) continue;
-      const { episodes } = parseEpisodes(`${e.name} ${path.basename(abs)}`);
-      if (!episodes.length) continue;
+      // 先记数再解析：认不出集号的视频也要统计，否则「目录选到片库根」时
+      // 卡片上只会显示一个莫名其妙的集数，看不出真正的问题
       files += 1;
       bytes += size;
+      const { episodes } = parseEpisodes(e.name);
+      if (!episodes.length) continue;
+      matched += 1;
       for (const n of episodes) found.add(n);
     }
   };
 
   await walk(dir, 0);
-  return { episodes: [...found].sort((a, b) => a - b), files, bytes };
+  return { episodes: [...found].sort((a, b) => a - b), files, matched, bytes };
 }
 
 /**

@@ -7,6 +7,7 @@ import { listSubs, getSub, patchSub, pushLog } from './store.js';
 import { scanEpisodes, missingEpisodes } from './episodes.js';
 import { buildEpisodeIndex, findSourceForEpisode, targetUpperBound } from './matcher.js';
 import { routeFor } from '../engine/index.js';
+import { tmdbReady, tvDetail } from '../sources/tmdb.js';
 
 /**
  * 订阅执行器。
@@ -74,6 +75,45 @@ function backoffMinutes(base, fails) {
 /** 1=周一 … 7=周日（JS 的 getDay() 里 0 是周日，这里换成人话口径） */
 export function weekdayOf(ts = Date.now()) {
   return new Date(ts).getDay() || 7;
+}
+
+/**
+ * "2026-11-13" → 1~7（周一~周日），格式不对返回 0。
+ * 不用 new Date(str)：那样会按 UTC 解析，西半球时区会整体退一天。
+ */
+export function weekdayOfDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim());
+  if (!m) return 0;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  return Number.isNaN(d.getTime()) ? 0 : d.getDay() || 7;
+}
+
+/**
+ * TMDB 元数据缓存 12 小时。
+ * 总集数和播出日历不会在一小时内变，但也不能永远不更新——
+ * 12 小时等于「一天问两次」，对 TMDB 几乎无感，又能跟上临时改档。
+ */
+const TMDB_TTL = 12 * 3600 * 1000;
+
+/** 拿一次 TMDB 元数据（优先用落盘缓存）。失败不抛，交给调用方降级。 */
+async function ensureTmdbMeta(sub) {
+  if (!sub.tmdbId || !tmdbReady()) return null;
+  const cached = sub.tmdbMeta;
+  if (cached && cached.at && Date.now() - cached.at < TMDB_TTL) return cached;
+  const d = await tvDetail(sub.tmdbId);
+  return {
+    at: Date.now(),
+    name: d.name,
+    status: d.status,
+    statusCn: d.statusCn,
+    totalEpisodes: d.totalEpisodes,
+    totalSeasons: d.totalSeasons,
+    nextAirDate: d.nextAirDate,
+    nextAirEpisode: d.nextAirEpisode,
+    nextAirSeason: d.nextAirSeason,
+    lastAirDate: d.lastAirDate,
+    lastAirEpisode: d.lastAirEpisode,
+  };
 }
 
 /** 服务器本地时区当天 0 点（NAS 是 Asia/Shanghai，跨时区部署也按本机时间算） */
@@ -189,20 +229,68 @@ export async function runCheck(id, { force = false } = {}) {
   const cfg = loadSettings().subscribe || {};
   const dir = resolveDir(sub.dir);
   if (!dir) throw new Error(`目标目录不在允许的片库内：${sub.dir}`);
+  // 片库根不能当订阅目录：扫的是「这部剧的文件夹」，不是整库。
+  // 选到根目录会把全库文件当成同一部剧，集数变成几十上百集的无意义并集。
+  if (allowedRoots().some((r) => path.resolve(r) === dir)) {
+    throw new Error(`保存目录是片库根目录（${dir}），请改成这部剧自己的文件夹`);
+  }
 
   running.add(sub.id);
   const notes = [];
   try {
     await fsp.mkdir(dir, { recursive: true });
     const have = await scanEpisodes(dir);
+    // 目录选得太上层（比如选到了分类目录甚至片库根）时，文件数会远多于集数，
+    // 这时补集没意义——先把原因说清楚，比闷头下一堆错集强
+    if (have.files >= 20 && have.files > have.episodes.length * 3) {
+      notes.push(
+        `扫到 ${have.files} 个视频文件，只认出 ${have.episodes.length} 集：保存目录可能选得太上层，建议直接选到这部剧的文件夹`,
+      );
+    }
+
+    // TMDB 元数据：只用来补「总集数」和「下一集播出日」。
+    // 拿不到就按站点/本地的老路走，绝不能因为它把整次检查搞挂。
+    let tm = sub.tmdbMeta || null;
+    if (sub.tmdbId) {
+      if (!tmdbReady()) {
+        notes.push('这个订阅绑了 TMDB 条目，但设置里没填密钥，元数据先跳过');
+      } else {
+        try {
+          tm = await ensureTmdbMeta(sub);
+        } catch (err) {
+          notes.push(`TMDB：${String(err.message || err).slice(0, 90)}`);
+        }
+      }
+    }
 
     const built = await buildEpisodeIndex(sub, { pages: 2 });
     notes.push(...built.notes);
 
-    const to = targetUpperBound(sub, { siteTotal: built.siteTotal, maxEp: built.maxEp, have: have.episodes });
+    const to = targetUpperBound(sub, {
+      tmdbTotal: tm?.totalEpisodes || 0,
+      siteTotal: built.siteTotal,
+      maxEp: built.maxEp,
+      have: have.episodes,
+    });
+
+    // 用户没填更新日、TMDB 又知道下一集哪天播 → 替他填上，调度自动变成「那天密查」。
+    // 只在用户没填时做：填了就是用户的意思，不能被 TMDB 覆盖。
+    let autoDay = 0;
+    if (!sub.updateDay && tm?.nextAirDate) {
+      const wd = weekdayOfDate(tm.nextAirDate);
+      if (wd >= 1 && wd <= 7) {
+        autoDay = wd;
+        const dow = ['', '一', '二', '三', '四', '五', '六', '日'][wd];
+        notes.push(`按 TMDB 的下一集日期（${tm.nextAirDate}）把更新日设成周${dow}`);
+      }
+    }
+    // 本次计算「下次多久查」时就用上刚推出来的更新日，否则第一轮还是匀速
+    const after = autoDay ? { ...sub, updateDay: autoDay } : sub;
+    const metaPatch = tm ? { tmdbMeta: tm } : {};
     if (!to) {
-      const msg = '站点和豆瓣都没给出集数，无法判断该补到第几集。请手动填「总共多少集」后重试';
+      const msg = '站点、TMDB 都没给出集数，无法判断该补到第几集。请手动填「总共多少集」后重试';
       patchSub(sub.id, {
+        ...metaPatch,
         lastCheckAt: Date.now(),
         nextCheckAt: Date.now() + 30 * 60 * 1000,
         lastResult: msg,
@@ -214,10 +302,12 @@ export async function runCheck(id, { force = false } = {}) {
 
     const missing = missingEpisodes({ have: have.episodes, sent: sub.sent, from: sub.startEpisode, to });
     if (!missing.length) {
-      const msg = `齐全：本地 ${have.episodes.length} 集，目标 ${to} 集`;
+      const msg = `齐全：本地 ${have.episodes.length} 集（${have.files} 个文件），目标 ${to} 集`;
       patchSub(sub.id, {
+        ...metaPatch,
+        ...(autoDay ? { updateDay: autoDay } : {}),
         lastCheckAt: Date.now(),
-        nextCheckAt: Date.now() + nextDelay(sub, cfg) * 60 * 1000,
+        nextCheckAt: Date.now() + nextDelay(after, cfg) * 60 * 1000,
         lastResult: msg,
         failCount: 0,
       });
@@ -281,15 +371,18 @@ export async function runCheck(id, { force = false } = {}) {
     }
 
     bumpDaily();
-    const msg = `本地 ${have.episodes.length} 集 / 目标 ${to} 集 / 缺 ${missing.length} 集 / 本次下发 ${downloaded} 集`;
-    const nextAt = Date.now() + nextDelay(sub, cfg) * 60 * 1000;
+    const msg = `本地 ${have.episodes.length} 集（${have.files} 个文件） / 目标 ${to} 集 / 缺 ${missing.length} 集 / 本次下发 ${downloaded} 集`;
+    const nextAt = Date.now() + nextDelay(after, cfg) * 60 * 1000;
     patchSub(sub.id, {
+      ...metaPatch,
+      ...(autoDay ? { updateDay: autoDay } : {}),
       sent,
       lastCheckAt: Date.now(),
       nextCheckAt: nextAt,
       lastResult: msg,
       failCount: 0,
-      totalEpisodes: sub.totalEpisodes || built.siteTotal || 0,
+      // 不再把站点/TMDB 的集数写回 totalEpisodes：
+      // 那是「用户手填」字段，写进去就等于以后永远压着站点和 TMDB，一条脏值能锁死整条订阅。
     });
     if (notes.length) pushLog(sub, notes.slice(0, 3).join('；'));
 
@@ -299,6 +392,7 @@ export async function runCheck(id, { force = false } = {}) {
       downloaded,
       summary: {
         have: have.episodes.length,
+        files: have.files,
         to,
         missing: missing.length,
         scanned: built.scanned,

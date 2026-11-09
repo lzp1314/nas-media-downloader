@@ -23,7 +23,7 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
-  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.14</button>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.16</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
@@ -182,7 +182,7 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.14</span></div>
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.16</span></div>
             <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
             <div class="status" id="verStatus"></div>
             <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
@@ -265,6 +265,62 @@
               <button class="btn sm ghost" id="btnClearPan">清空</button>
             </div>
             <div class="status" id="panStatus"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>豆瓣（可选）</h3><span class="pill" id="doubanPill">未设置</span></div>
+            <p class="desc">
+              只用来补「总集数 / 别名 / 首播日」，不搜资源，也不影响能不能补到集。不填也能用，只是集数偶尔不准。
+            </p>
+            <p class="desc">
+              拿法：浏览器登录豆瓣 → 按 F12 → 打开 Network（网络）→ 刷新页面 → 点任意一个请求 →
+              在 Request Headers 里找到 <code>Cookie:</code> 整行，把后面那串复制过来（以 <code>dbcl2=</code> 开头那种）。
+              只存在 NAS 的配置目录里，保存后界面上不再回显。
+            </p>
+            <div class="field">
+              <label>Cookie</label>
+              <input id="doubanCookie" type="password" placeholder="dbcl2=…; ck=…; 粘贴整行" />
+              <button class="btn sm" id="btnSaveDouban">保存</button>
+              <button class="btn sm ghost" id="btnClearDouban">清空</button>
+            </div>
+            <div class="field">
+              <label>用户 id</label>
+              <input id="doubanUid" placeholder="选填，豆瓣个人主页地址里的数字" class="w140" />
+              <button class="btn sm ghost" id="btnSaveDoubanUid">保存 id</button>
+            </div>
+            <div class="status" id="doubanStatus"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>TMDB（推荐）</h3><span class="pill" id="tmdbPill">未设置</span></div>
+            <p class="desc">
+              给的是<b>逐集登记过</b>的剧集数据：总集数、别名，以及<b>下一集哪天播</b>。
+              填了它，订阅里连更新日都不用挑——程序按播出日历自己排。
+            </p>
+            <p class="desc">
+              密钥自己申请：登录 themoviedb.org → 右上头像 → Settings → API → 新建，拿到
+              「API 密钥（v3，32 位）」或「API 读访问令牌（v4，<code>eyJ</code> 开头）」，<b>两个填一个就行</b>，
+              两个都填以令牌为准。密钥只存在 NAS 的配置目录里，保存后界面上不再回显。
+            </p>
+            <div class="field">
+              <label>读令牌</label>
+              <input id="tmdbToken" type="password" placeholder="v4 读访问令牌，eyJ 开头那串" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>API Key</label>
+              <input id="tmdbKey" type="password" placeholder="v3 密钥，32 位十六进制" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>API 域名</label>
+              <input id="tmdbBase" placeholder="留空自动换（国内 api.themoviedb.org 常被污染）" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn sm" id="btnSaveTmdb">保存</button>
+              <button class="btn sm ghost" id="btnTestTmdb">测试连接</button>
+              <button class="btn sm ghost" id="btnClearTmdb">清空</button>
+            </div>
+            <div class="status" id="tmdbStatus"></div>
           </div>
 
         </div>
@@ -359,22 +415,26 @@
 <div class="modal" id="subModal" hidden>
   <div class="dialog">
     <h3 id="subModalTitle">新建订阅</h3>
-    <p class="tip">填剧名就能用。更新时刻只影响<b>多久查一次</b>，不影响补集。<br />
-      例：周三 20:00 → 周三 20 点起每 30 分钟查一次，周四同时段再查一轮。</p>
+    <p class="tip">填剧名就能用。点 <b>TMDB 查</b> 能自动带出总集数和下一集播出日（连更新日都不用挑）。<br />
+      更新时刻只影响<b>多久查一次</b>，不影响补集：例 周三 20:00 → 20 点起每 30 分钟查一次。</p>
 
     <div class="field">
       <label>剧名</label>
       <input id="subTitle" placeholder="例如：凡人修仙传" autocomplete="off" />
-      <button class="btn sm" id="btnDouban" title="用豆瓣补全总集数和别名">豆瓣查</button>
+      <button class="btn sm" id="btnTmdb" title="从 TMDB 选剧，带出总集数和下一集播出日">TMDB 查</button>
+      <button class="btn sm ghost" id="btnDouban" title="TMDB 查不到时，用豆瓣补集数和别名">豆瓣查</button>
     </div>
+    <input id="subTmdbId" type="hidden" />
     <div class="field">
       <label>搜索词</label>
       <input id="subKeyword" placeholder="留空则用剧名；站点命名不同时填站上的写法" autocomplete="off" />
     </div>
     <div class="field">
       <label>保存到</label>
-      <select id="subDir"></select>
+      <input id="subDirText" readonly placeholder="点右边「选择」挑这部剧自己的文件夹" autocomplete="off" />
+      <button class="btn sm" id="btnPickSubDir">选择</button>
     </div>
+    <input id="subDir" type="hidden" />
     <div class="field">
       <label>更新日</label>
       <select id="subDay">
@@ -420,6 +480,17 @@
   </div>
 </div>
 
+<div class="modal" id="tmdbModal" hidden>
+  <div class="dialog">
+    <h3>从 TMDB 选剧</h3>
+    <p class="tip" id="tmdbTip">选一个结果，自动带出总集数、别名和下一集播出日</p>
+    <div class="tmdb-list" id="tmdbList"></div>
+    <div class="dialog-foot">
+      <button class="btn ghost" id="tmdbCancel">取消</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="dirModal" hidden>
   <div class="dialog">
     <h3>保存到</h3>
@@ -441,7 +512,7 @@
 <div class="modal" id="verModal" hidden>
   <div class="dialog ver-dialog">
     <h3>版本与更新</h3>
-    <div class="ver-now">当前版本 <b id="verNow">v1.2.14</b></div>
+    <div class="ver-now">当前版本 <b id="verNow">v1.2.16</b></div>
     <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
     <div class="ver-cmd" id="verCmd" hidden>
       <small>在 NAS 的 compose 目录执行：</small>

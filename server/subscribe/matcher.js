@@ -206,11 +206,20 @@ export async function findSourceForEpisode(sub, index, episode, { notes = [] } =
   return null;
 }
 
-/** 订阅生效的目标范围上界：豆瓣总集数 > 站点声明 > 已见最大集 */
-export function targetUpperBound(sub, { siteTotal = 0, maxEp = 0, have = [] } = {}) {
+/**
+ * 订阅生效的目标范围上界。
+ *
+ * 优先级：补集范围上限 > 用户手填的总集数 > TMDB 声明 > 站点声明 > 本地已见最大集。
+ * 把「用户手填」放在 TMDB 和站点前面：它们偶尔会把特别篇、合集包、
+ * 别的剧的「更新至 N 集」算进来，一旦比实际集数大，订阅就会一直追着不存在的集号跑。
+ * TMDB 放在站点前面，是因为站点那条「40 集」经常是营销文案，TMDB 是逐集登记过的。
+ */
+export function targetUpperBound(sub, { tmdbTotal = 0, siteTotal = 0, maxEp = 0, have = [] } = {}) {
   if (sub.endEpisode > 0) return sub.endEpisode;
+  if (sub.totalEpisodes > 0) return sub.totalEpisodes;
+  if (tmdbTotal > 0) return tmdbTotal;
   const seenMax = Math.max(maxEp, ...(have.length ? have : [0]));
-  return Math.max(sub.totalEpisodes || 0, siteTotal || 0, seenMax) || 0;
+  return Math.max(siteTotal || 0, seenMax) || 0;
 }
 
 export function subscribeSettings() {

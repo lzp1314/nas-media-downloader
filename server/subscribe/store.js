@@ -56,6 +56,31 @@ function clock(v) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(s) ? s : '';
 }
 
+/** YYYY-MM-DD，其余一律空 */
+function day(v) {
+  const s = str(v, 10).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
+}
+
+/** TMDB 缓存：形状固定，字段缺了就当不知道，别让界面渲染出 undefined */
+function normalizeTmdbMeta(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    at: num(raw.at),
+    name: str(raw.name, 120),
+    status: str(raw.status, 40),
+    statusCn: str(raw.statusCn, 20),
+    totalEpisodes: Math.max(0, num(raw.totalEpisodes)),
+    // 多季剧的集号会重复（每季都从 1 开始），显示时要带季号才不歧义
+    totalSeasons: Math.max(0, num(raw.totalSeasons)),
+    nextAirDate: day(raw.nextAirDate),
+    nextAirEpisode: Math.max(0, num(raw.nextAirEpisode)),
+    nextAirSeason: Math.max(0, num(raw.nextAirSeason)),
+    lastAirDate: day(raw.lastAirDate),
+    lastAirEpisode: Math.max(0, num(raw.lastAirEpisode)),
+  };
+}
+
 /** 把外部传入的对象收成固定形状，脏数据一律丢弃而不是抛错 */
 export function normalize(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -87,6 +112,10 @@ export function normalize(raw) {
     keyword: str(raw.keyword, 120).trim() || title,
     aliases,
     doubanId: str(raw.doubanId, 20).trim(),
+    // TMDB 条目 id：有了它才能拿「总集数 / 下一集播出日」，没有也不影响补集
+    tmdbId: Number(raw.tmdbId) > 0 ? Math.floor(Number(raw.tmdbId)) : 0,
+    // TMDB 元数据是程序维护的缓存，不让前端直接写，避免界面把过期数据又塞回来
+    tmdbMeta: normalizeTmdbMeta(raw.tmdbMeta),
     totalEpisodes: Math.max(0, num(raw.totalEpisodes)),
     dir,
     startEpisode: Math.max(1, num(raw.startEpisode, 1)),
@@ -131,7 +160,7 @@ export function addSub(input) {
 }
 
 /** 只允许改这几项，其余（sent/log/统计）由程序维护，避免前端误写 */
-const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDay', 'updateTime', 'enabled'];
+const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDay', 'updateTime', 'enabled'];
 
 export function updateSub(id, patch) {
   const db = loadSubs();
@@ -139,6 +168,8 @@ export function updateSub(id, patch) {
   if (!item) throw new Error('订阅不存在');
   const clean = {};
   for (const k of EDITABLE) if (patch && k in patch) clean[k] = patch[k];
+  // 解绑 TMDB 时把缓存一起清掉：留着的话卡片还会显示上一部剧的「下一集」
+  if ('tmdbId' in clean && !Number(clean.tmdbId)) clean.tmdbMeta = null;
   const next = normalize({ ...item, ...clean, id: item.id, sent: item.sent, log: item.log });
   if (!next) throw new Error('修改后的订阅信息不合法');
   Object.assign(item, next);

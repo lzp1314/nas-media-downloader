@@ -75,6 +75,7 @@ import { listSubs, addSub, updateSub, removeSub, getSub, patchSub } from './subs
 import { runCheck, startScheduler, subStats } from './subscribe/runner.js';
 import { scanEpisodes, missingEpisodes } from './subscribe/episodes.js';
 import { suggest as doubanSuggest, subject as doubanSubject, watching as doubanWatching, doubanReady } from './sources/douban.js';
+import { searchTv as tmdbSearch, tvDetail as tmdbDetail, seasonEpisodes as tmdbSeason, testConnection as tmdbTest, tmdbReady } from './sources/tmdb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -837,7 +838,7 @@ on('GET', '/api/disk', async (req, res) => {
 
 on('POST', '/api/settings', async (req, res) => {
   const patch = await readBody(req);
-  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan', 'douban', 'subscribe'];
+  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan', 'douban', 'tmdb', 'subscribe'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   if ('engine' in clean && !['auto', 'aria2', 'qbit'].includes(clean.engine)) {
@@ -941,7 +942,7 @@ on('GET', '/api/sub', async (req, res) => {
     engineMode: loadSettings().engine,
     pending: Object.values(s.sent || {}).filter((x) => x.state === 'failed').length,
   }));
-  sendJson(res, 200, { items, stats: subStats(), douban: { ready: doubanReady() } });
+  sendJson(res, 200, { items, stats: subStats(), douban: { ready: doubanReady() }, tmdb: { ready: tmdbReady() } });
 });
 
 /** 单条详情：顺带把本地已有集扫出来，前端才能显示「已有 / 目标」 */
@@ -1029,6 +1030,48 @@ on('GET', '/api/douban/watching', async (req, res) => {
     sendJson(res, 200, { items: await doubanWatching() });
   } catch (err) {
     sendJson(res, 409, { error: cleanMsg(err.message), needCookie: Boolean(err.needCookie) });
+  }
+});
+
+/* TMDB：同样只做元数据。比豆瓣多一个关键能力——「下一集哪天播」 */
+on('GET', '/api/tmdb/search', async (req, res, params, url) => {
+  const q = String(url.searchParams.get('q') || '').trim();
+  if (!q) return sendJson(res, 200, { items: [] });
+  try {
+    sendJson(res, 200, { items: await tmdbSearch(q) });
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '', needKey: err.code === 'ENEEDAUTH', items: [] });
+  }
+});
+
+on('POST', '/api/tmdb/lookup', async (req, res) => {
+  const { id } = await readBody(req);
+  if (!Number(id)) return sendJson(res, 400, { error: '缺少 TMDB 条目 id' });
+  try {
+    sendJson(res, 200, await tmdbDetail(id));
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '', needKey: err.code === 'ENEEDAUTH' });
+  }
+});
+
+/** 某一季的逐集播出日期：目前界面不用，留给「看播出日历」这类需求 */
+on('GET', '/api/tmdb/season', async (req, res, params, url) => {
+  const id = Number(url.searchParams.get('id'));
+  const n = Number(url.searchParams.get('n') || 1);
+  if (!id) return sendJson(res, 400, { error: '缺少 TMDB 条目 id' });
+  try {
+    sendJson(res, 200, { episodes: await tmdbSeason(id, n) });
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '' });
+  }
+});
+
+/** 测试连接：由 NAS 自己发请求，能同时验证「网络通不通」和「Key 对不对」 */
+on('POST', '/api/tmdb/test', async (req, res) => {
+  try {
+    sendJson(res, 200, await tmdbTest());
+  } catch (err) {
+    sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '' });
   }
 });
 

@@ -80,6 +80,8 @@ export function mergeSearchItems(raw, keyword) {
         type: item.type || '',
         sources: [],
         variants: [],
+        mSources: [],
+        mCount: 0,
       };
       map.set(key, g);
     }
@@ -90,6 +92,11 @@ export function mergeSearchItems(raw, keyword) {
     if (!g.quality && item.quality) g.quality = item.quality;
     if (!g.tags && item.tags) g.tags = item.tags;
     if (!g.sources.includes(source)) g.sources.push(source);
+    // 磁力是聚合过来的一条，但用户想知道具体是哪几个源搜到的
+    if (item.mSources?.length) {
+      for (const n of item.mSources) if (!g.mSources.includes(n)) g.mSources.push(n);
+    }
+    if (item.mCount) g.mCount = Math.max(g.mCount || 0, item.mCount);
     if (!g.variants.some((v) => v.source === source && v.id === item.id)) {
       g.variants.push({ source, id: item.id, quality: item.quality || '', type: item.type || '' });
     }
@@ -157,7 +164,8 @@ export function normalizeResources(packs) {
           quality: q.label,
           rank: q.rank,
           source: pack.source,
-          sourceLabel: pack.label,
+          // 磁力条目自带来源名（用户给每个源起的名字），优先用它，别一律写成「磁力搜索」
+          sourceLabel: String(it.sourceLabel || '').trim() || pack.label,
           time: it.time || '',
         });
       }

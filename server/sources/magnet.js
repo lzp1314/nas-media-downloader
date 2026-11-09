@@ -146,54 +146,163 @@ export function fillTemplate(tpl, keyword) {
     .replace(/\{kw_raw\}/gi, kw);
 }
 
+/* ---------------- 会话、脚本解包、验证页 ---------------- */
+
+/**
+ * 按域名保存 cookie。
+ * 有些站把「人已经看过验证页」存在 session 里，每次请求都裸奔的话永远过不去；
+ * 也有站把搜索结果和一次性 session 绑定。同一轮搜索里共享就够了，30 分钟过期。
+ */
+const COOKIE_TTL = 30 * 60 * 1000;
+const cookieJar = new Map(); // host -> { at, jar: Map }
+
+function hostKey(url) {
+  try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
+}
+
+function cookieHeader(url) {
+  const h = hostKey(url);
+  const box = cookieJar.get(h);
+  if (!box) return '';
+  if (Date.now() - box.at > COOKIE_TTL) {
+    cookieJar.delete(h);
+    return '';
+  }
+  return [...box.jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+function saveCookies(url, res) {
+  const raw = res.headers.getSetCookie ? res.headers.getSetCookie() : [];
+  if (!raw.length) return;
+  const h = hostKey(url);
+  let box = cookieJar.get(h);
+  if (!box || Date.now() - box.at > COOKIE_TTL) {
+    box = { at: Date.now(), jar: new Map() };
+    cookieJar.set(h, box);
+  }
+  box.at = Date.now();
+  for (const line of raw) {
+    const [pair] = String(line).split(';');
+    const i = pair.indexOf('=');
+    if (i > 0) box.jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+  }
+}
+
+/**
+ * 有的站把整块结果 HTML 用 atob 藏进脚本，原始响应里只有一个空壳：
+ *   document.getElementById("search-box").innerHTML = decodeURIComponent(window.atob("..."))
+ * 不解包就等于「页面里没有磁力链接」。解出来拼回正文，后面的抽取逻辑照旧。
+ */
+const ATOB_RE = /atob\s*\(\s*["']([A-Za-z0-9+/=\s]{32,})["']\s*\)/gi;
+
+export function unpackScripts(html) {
+  const text = String(html || '');
+  if (!/atob\s*\(/i.test(text)) return text;
+  const parts = [];
+  let m;
+  ATOB_RE.lastIndex = 0;
+  while ((m = ATOB_RE.exec(text)) && parts.length < 6) {
+    const b64 = m[1].replace(/\s+/g, '');
+    let chunk;
+    try { chunk = Buffer.from(b64, 'base64').toString('utf8'); } catch { continue; }
+    if (/%[0-9A-F]{2}/i.test(chunk)) {
+      try { chunk = decodeURIComponent(chunk); } catch { /* 保持原样 */ }
+    }
+    if (!/<[a-z!/]/i.test(chunk)) continue; // 不像 HTML，多半是别的东西
+    if (text.includes(chunk)) continue;
+    parts.push(chunk);
+  }
+  return parts.length ? `${text}\n<!-- unpacked -->\n${parts.join('\n')}` : text;
+}
+
+/** 「点一下按钮才能进」的验证页；页面本身很小，容易和正常页区分 */
+const CHALLENGE_HINT = /(cf-browser-verification|cf-im-under-attack|验证页面|Verification Page|请点击下面按钮|Just a moment\.\.\.|Checking your browser)/i;
+/** 这类验证通常是向同地址 POST 一个约定动作，靠 session 记住结果 */
+const CHALLENGE_ACTIONS = ['act=challenge', 'challenge=1', 'act=verify', 'verify=1'];
+
+function isChallenge(html) {
+  const t = String(html || '');
+  return t.length < 30000 && CHALLENGE_HINT.test(t);
+}
+
+/** 单次请求（含 POST 重定向跟随），不带任何「聪明」逻辑 */
+async function requestOnce(url, source, signal) {
+  const isPost = source.method === 'POST';
+  const headers = {
+    'User-Agent': DEFAULT_UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+    ...(source.referer ? { Referer: source.referer } : {}),
+  };
+  const cookie = cookieHeader(url);
+  if (cookie) headers.Cookie = cookie;
+  let body;
+  if (isPost) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    body = source.postBody || '';
+  }
+
+  let res;
+  if (!isPost) {
+    res = await fetch(url, { method: 'GET', headers, signal, redirect: 'follow' });
+    saveCookies(url, res);
+  } else {
+    // POST 不能直接交给 fetch 跟重定向：301/302 会被降级成 GET，表单内容（关键词）就丢了。
+    // 分两种情况：跳到别的路径（多半带着结果页参数）按标准换 GET；只跳到裸根（换域名）
+    // 就把 POST 连同参数重发一次，否则跳过去只剩首页。
+    const visited = new Set();
+    let cur = url;
+    for (let hop = 0; hop < 5; hop += 1) {
+      res = await fetch(cur, { method: 'POST', headers, body, signal, redirect: 'manual' });
+      saveCookies(cur, res);
+      const loc = res.headers.get('location');
+      if (!loc) break;
+      let next;
+      try { next = new URL(loc, cur); } catch { break; }
+      if (visited.has(next.href)) break;
+      visited.add(next.href);
+      const bareRoot = next.pathname === '/' || next.pathname === '';
+      if ([301, 302, 303].includes(res.status) && !bareRoot) {
+        res = await fetch(next.href, { method: 'GET', headers, signal, redirect: 'follow' });
+        saveCookies(next.href, res);
+        break;
+      }
+      if (![301, 302, 307, 308].includes(res.status)) break;
+      cur = next.href;
+    }
+  }
+
+  const buf = await res.arrayBuffer();
+  let text = '';
+  try {
+    text = new TextDecoder(source.encoding || 'utf-8').decode(buf);
+  } catch {
+    text = new TextDecoder('utf-8').decode(buf);
+  }
+  return { text, status: res.status, url: res.url || url };
+}
+
 /** 请求一个页面，返回文本与响应信息；HTTP 非 200 不抛错，交给调用方判断 */
 async function fetchPage(url, source) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), source.timeout || 12000);
   try {
-    const isPost = source.method === 'POST';
-    const headers = {
-      'User-Agent': DEFAULT_UA,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      ...(source.referer ? { Referer: source.referer } : {}),
-    };
-    let body;
-    if (isPost) {
-      headers['Content-Type'] = 'application/x-www-form-urlencoded';
-      body = source.postBody || '';
-    }
-    let res;
-    if (!isPost) {
-      res = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'follow' });
-    } else {
-      // POST 不能直接交给 fetch 跟重定向：301/302 会被降级成 GET，表单内容（关键词）就丢了，
-      // 站点一跳域就只剩首页，看起来像「页面里没有磁力」。这里手工跟，保持 method+body。
-      const visited = new Set();
-      let cur = url;
-      for (let hop = 0; hop < 5; hop += 1) {
-        res = await fetch(cur, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' });
-        const loc = res.headers.get('location');
-        if (res.status === 303 && loc) {
-          // 303 是「去那边用 GET 看」，按规范换 GET
-          res = await fetch(new URL(loc, cur).href, { method: 'GET', headers, signal: controller.signal, redirect: 'follow' });
-          break;
-        }
-        if (![301, 302, 307, 308].includes(res.status) || !loc) break;
-        const next = new URL(loc, cur).href;
-        if (visited.has(next)) break;
-        visited.add(next);
-        cur = next;
+    let page = await requestOnce(url, source, controller.signal);
+    page.text = unpackScripts(page.text);
+    if (!isChallenge(page.text)) return page;
+
+    // 验证页：向同地址 POST 一次约定动作，让 session 记住「已通过」，然后重取
+    for (const action of CHALLENGE_ACTIONS) {
+      try {
+        await requestOnce(url, { ...source, method: 'POST', postBody: action, referer: url }, controller.signal);
+      } catch {
+        continue;
       }
+      const again = await requestOnce(url, source, controller.signal);
+      again.text = unpackScripts(again.text);
+      if (!isChallenge(again.text)) return { ...again, solved: action };
     }
-    const buf = await res.arrayBuffer();
-    let text = '';
-    try {
-      text = new TextDecoder(source.encoding || 'utf-8').decode(buf);
-    } catch {
-      text = new TextDecoder('utf-8').decode(buf);
-    }
-    return { text, status: res.status, url: res.url || url };
+    return { ...page, challenge: true };
   } finally {
     clearTimeout(timer);
   }
@@ -216,19 +325,31 @@ function titleFromPage(page) {
 /**
  * 详情页的结构化标题：<h1>/<h2>（class 像标题的加权）。
  * 很多站把片名放在这里，而 <title> 会拼上站名、按钮文案又太泛。
+ *
+ * 加了「像不像片名」的打分：带视频扩展名、带中文的优先；带站点标语
+ * （Free Torrent / Conversion Service / 首页…）的降权——否则解包之后，
+ * 页头那句标语会抢走真正的片名。
  */
+const VIDEO_EXT_RE = /\.(mp4|mkv|avi|iso|ts|wmv|flv|rmvb|m2ts|mov|mpg|mpeg)(\b|$)/i;
+const SLOGAN_RE = /(torrent\s*to|free\s*torrent|conversion|search\s*service|perm\.?anent\s*domain|永久域名|最新地址|首页|登录|注册|免责声明)/i;
+const DETAIL_PREFIX_RE = /^(?:details?\s*(?:for\s*)?(?:torrent)?\s*[:：]\s*)/i;
+
 function structuralTitle(page) {
   const re = /<h([12])([^>]*)>([\s\S]{0,300}?)<\/h\1>/gi;
   const cands = [];
   let m;
   while ((m = re.exec(page))) {
     const cls = (m[2].match(/class\s*=\s*["']([^"']*)["']/i) || [])[1] || '';
-    const text = cleanHtml(m[3]).replace(/\s+/g, ' ').trim();
+    const text = cleanHtml(m[3]).replace(/\s+/g, ' ').replace(DETAIL_PREFIX_RE, '').trim();
     if (text.length < 2 || text.length > 160) continue;
-    cands.push({ text, weight: /title|magnet|bt-|subject|name|head|movie|file/i.test(cls) ? 2 : 1 });
+    let score = /title|magnet|bt-|subject|name|head|movie|file/i.test(cls) ? 2 : 1;
+    if (VIDEO_EXT_RE.test(text)) score += 6;
+    if (/[\u4e00-\u9fa5]/.test(text)) score += 2;
+    if (SLOGAN_RE.test(text)) score -= 9;
+    cands.push({ text, score });
   }
   if (!cands.length) return '';
-  cands.sort((a, b) => b.weight - a.weight || b.text.length - a.text.length);
+  cands.sort((a, b) => b.score - a.score || b.text.length - a.text.length);
   return cands[0].text;
 }
 
@@ -274,6 +395,15 @@ export function extractFromHtml(html, baseUrl, source, limit = 40, meta = {}) {
     seen.add(hash);
 
     const at = page.indexOf(raw);
+    // 链接文字本身是「magnet:?xt=…」「https://…」「40 位 hash」的，不能当片名
+    const usableTitle = (t) => {
+      const s = String(t || '').trim();
+      return Boolean(s)
+        && !GENERIC_TITLE_RE.test(s)
+        && !/^(magnet:|https?:\/\/|\/\/|#)/i.test(s)
+        && !/^[a-f0-9]{32,40}$/i.test(s)
+        && !/xt=urn:btih/i.test(s);
+    };
     let title = nameFromDn(magnet);
     if (!title && at >= 0) {
       // 磁力在 <a href="magnet:...">标题</a> 里：取这对标签中间的文字
@@ -283,20 +413,20 @@ export function extractFromHtml(html, baseUrl, source, limit = 40, meta = {}) {
         const close = page.indexOf('</a>', tagEnd);
         if (close > tagEnd) {
           const anchor = cleanHtml(page.slice(tagEnd + 1, close)).trim();
-          if (anchor && !GENERIC_TITLE_RE.test(anchor)) title = anchor;
+          if (usableTitle(anchor)) title = anchor;
         }
       }
       // 详情页常见的结构化标题（<h1 class="bt-title"> / <h2 class="magnet-title">）
-      if (!title && structural && !GENERIC_TITLE_RE.test(structural)) title = structural;
+      if (!title && usableTitle(structural)) title = structural;
       if (!title) {
         const around = page.slice(Math.max(0, at - 300), at + 300);
         const attr = around.match(/title\s*=\s*["']([^"']{3,120})["']/i);
-        if (attr && !GENERIC_TITLE_RE.test(attr[1].trim())) title = cleanHtml(attr[1]).trim();
+        if (attr && usableTitle(attr[1])) title = cleanHtml(attr[1]).trim();
       }
     }
-    if (!title || GENERIC_TITLE_RE.test(title)) {
+    if (!title) {
       // 详情页常见：<title>片名_站点</title>
-      title = pageTitle || structural || meta.title || '';
+      title = [structural, pageTitle, meta.title].find(usableTitle) || '';
     }
     if (!title) title = `磁力 ${hash.slice(0, 10)}`;
 
@@ -552,11 +682,14 @@ export async function searchMagnet(keyword) {
   const settled = await Promise.allSettled(sources.map((s) => searchOne(s, kw)));
   const notes = [];
   const byHash = new Map();
+  const perSource = new Map(); // 源名 -> 命中条数，界面上要显示「是哪个源搜到的」
   settled.forEach((r, i) => {
     if (r.status === 'rejected') {
       notes.push(`${sources[i].name}：${String(r.reason?.message || r.reason).slice(0, 60)}`);
       return;
     }
+    if (!r.value.items.length) return;
+    perSource.set(sources[i].name, r.value.items.length);
     for (const it of r.value.items) {
       if (!byHash.has(it.hash)) byHash.set(it.hash, it);
     }
@@ -568,7 +701,7 @@ export async function searchMagnet(keyword) {
     const cutoff = Date.now() - CACHE_TTL;
     for (const [k, v] of resultCache) if (v.at < cutoff) resultCache.delete(k);
   }
-  return { key, items, notes };
+  return { key, items, notes, sources: [...perSource.entries()].map(([name, count]) => ({ name, count })) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -653,12 +786,16 @@ function buildCandidates(raw) {
     for (const c of templateUrlCandidates(raw.url)) push(c);
   }
   // 2) 常见搜索路径（用户填了首页或错误路径时兜底）
+  //    参数名和编码各站不同：有的要 word、有的要 q；有的收明文、有的只认 base64。
   const common = [
     `${origin}/search?q={kw}`, `${origin}/search?q={kw_b64}`,
+    `${origin}/search?word={kw}`, `${origin}/search?word={kw_b64}`,
     `${origin}/search?wd={kw}`, `${origin}/search?wd={kw_b64}`,
-    `${origin}/search/{kw}`, `${origin}/s?q={kw}`,
-    `${origin}/search?keyword={kw}`, `${origin}/so?q={kw}`, `${origin}/q/{kw}`,
-    `${origin}/q/{kw_b64}`, `${origin}/search/{kw_b64}`,
+    `${origin}/search?keyword={kw}`, `${origin}/search?keyword={kw_b64}`,
+    `${origin}/search?kw={kw_b64}`, `${origin}/search?key={kw_b64}`,
+    `${origin}/search/{kw_b64}`, `${origin}/search/{kw}`,
+    `${origin}/s?q={kw}`, `${origin}/so?q={kw}`,
+    `${origin}/q/{kw_b64}`, `${origin}/q/{kw}`,
     `${origin}/?s={kw}`, `${origin}/?q={kw}`,
   ];
   for (const url of common) push({ url, method: 'GET', postBody: '', label: `常见路径 ${new URL(url).pathname}` });
@@ -678,32 +815,46 @@ export async function probeSource(raw, keyword = TEST_KEYWORD) {
 
   const candidates = [...built.list];
   // 首页表单（抓取后动态追加，优先级放在常见路径之前）
+  let homeChallenge = false;
   try {
     const homepage = await fetchPage(`${built.origin}/`, { ...base, method: 'GET' });
+    homeChallenge = Boolean(homepage.challenge);
     const forms = formsToCandidates(homepage.text, built.origin);
-    steps.push({ label: '站点首页', status: homepage.status, found: 0, note: forms.length ? `发现 ${forms.length} 个搜索表单` : '没有可识别的搜索表单' });
+    const note = homeChallenge
+      ? '站点要求先过验证，自动应答没成功'
+      : forms.length
+        ? `发现 ${forms.length} 个搜索表单`
+        : '没有可识别的搜索表单';
+    steps.push({ label: '站点首页', status: homepage.status, found: 0, note });
     candidates.splice(1, 0, ...forms);
   } catch (e) {
     steps.push({ label: '站点首页', status: 0, found: 0, note: String(e.cause?.code || e.message).slice(0, 50) });
   }
 
   const tried = new Set();
+  const deadPaths = new Set(); // 已经 404 的路径，同路径再换参数名也没意义
   let best = { count: 0 };
   for (const c of candidates) {
     if (tried.has(c.key)) continue;
     tried.add(c.key);
     if (steps.length > 18) break;
+    let candPath = '';
+    try { candPath = new URL(fillTemplate(c.url, kw)).pathname; } catch { /* 忽略 */ }
+    if (candPath && deadPaths.has(candPath)) continue;
     const source = normalizeItem({ ...base, url: c.url, method: c.method, postBody: c.postBody, detail: 'auto', enabled: true }, 0);
     try {
       const r = await searchOne(source, kw);
       const note = r.items.length
         ? `命中 ${r.items.length} 条${r.retried ? '（换 base64 关键词后命中）' : ''}`
-        : r.followed
-          ? `结果页有内容，跟进了 ${r.followed} 个详情页仍无磁力`
-          : looksLikeKeywordError(r.page)
-            ? '站点对关键词有要求（编码或参数名不对）'
-            : '页面里没有磁力链接';
+        : r.page?.challenge
+          ? '站点要求先过验证，自动应答没成功'
+          : r.followed
+            ? `结果页有内容，跟进了 ${r.followed} 个详情页仍无磁力`
+            : looksLikeKeywordError(r.page)
+              ? '站点对关键词有要求（编码或参数名不对）'
+              : '页面里没有磁力链接';
       steps.push({ label: c.label, status: r.page.status, found: r.items.length, note });
+      if (r.page.status === 404 || r.page.status === 410) deadPaths.add(candPath);
       if (r.items.length > best.count) {
         best = { count: r.items.length, sample: r.items.slice(0, 3).map((x) => x.title), source, c, retried: r.retried };
       }
@@ -714,10 +865,12 @@ export async function probeSource(raw, keyword = TEST_KEYWORD) {
   }
 
   if (!best.count) {
+    const sawChallenge = homeChallenge || steps.some((s) => /要求先过验证/.test(s.note));
     const sawKwErr = steps.some((s) => /对关键词有要求/.test(s.note));
     const sawResults = steps.some((s) => /结果页有内容/.test(s.note));
     let hint = '没抓到磁力：';
-    if (sawKwErr) hint += '这个站要求 base64 关键词，程序已自动换编码重试仍没出结果，可能是当前测试词没收录，换个词再测。';
+    if (sawChallenge) hint += '这个站进站前要点一下按钮过验证，自动应答没通过（有的是真正的浏览器验证），暂时只能用别的站。';
+    else if (sawKwErr) hint += '这个站要求 base64 关键词，程序已自动换编码重试仍没出结果，可能是当前测试词没收录，换个词再测。';
     else if (sawResults) hint += '结果页能打开，但详情页没取到磁力（可能要先登录或过验证）。';
     else hint += '站点可能需要 JS 渲染或验证码；也可以只填站点首页地址，让程序自己找表单。';
     return { ok: false, count: 0, sample: [], steps, hint };
@@ -772,12 +925,27 @@ export function cachedItems(key) {
   return hit.items;
 }
 
-/** 把缓存条目转换成资源抽屉需要的格式 */
+/** 把缓存条目转换成资源抽屉需要的格式：按来源分档，每条标出是哪个源搜到的 */
 export function cachedGroups(key) {
   const items = cachedItems(key);
   if (!items.length) return [];
-  return [{
-    group: '磁力搜索',
-    items: items.map((it) => ({ name: it.title, size: it.size, magnet: it.magnet, hash: it.hash })),
-  }];
+  const order = [];
+  const map = new Map();
+  for (const it of items) {
+    const label = String(it.site || '').trim() || '磁力搜索';
+    if (!map.has(label)) {
+      map.set(label, []);
+      order.push(label);
+    }
+    map.get(label).push({
+      name: it.title,
+      size: it.size,
+      magnet: it.magnet,
+      hash: it.hash,
+      site: label,
+      sourceLabel: label,
+      spec: label, // 抽屉按「规格」分档，磁力这里用来源名分档
+    });
+  }
+  return order.map((label) => ({ group: label, items: map.get(label) }));
 }

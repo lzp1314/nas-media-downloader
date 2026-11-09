@@ -277,6 +277,7 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   display: inline-flex; align-items: center; gap: 4px;
   padding: 1px 7px; border-radius: 5px; font-size: 13.5px;
   background: rgba(91, 140, 255, .12); color: #9db4ff; border: 1px solid rgba(91, 140, 255, .22);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .src.alt { background: rgba(34, 211, 166, .10); color: #7fe3c4; border-color: rgba(34, 211, 166, .22); }
 /* 来源徽章按来源固定配色，和顶部「来源」栏的圆点对应 */

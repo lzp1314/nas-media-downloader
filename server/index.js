@@ -363,9 +363,18 @@ on('POST', '/api/search', async (req, res) => {
     try {
       const r = await searchMagnet(kw);
       if (r.items.length) {
+        const names = (r.sources || []).map((s) => s.name).filter(Boolean);
         raw.push({
           source: 'm',
-          item: { id: r.key, title: kw, quality: '', tags: `磁力搜索 ${r.items.length}`, type: '' },
+          item: {
+            id: r.key,
+            title: kw,
+            quality: '',
+            tags: names.length ? `磁力 ${r.items.length}` : `磁力搜索 ${r.items.length}`,
+            type: '',
+            mSources: names,
+            mCount: r.items.length,
+          },
         });
       }
       for (const n of r.notes) notes.push(`磁力搜索：${cleanMsg(n)}`);

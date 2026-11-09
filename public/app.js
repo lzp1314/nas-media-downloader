@@ -331,7 +331,16 @@ function renderResults() {
   $('results').innerHTML = items
     .map((it, i) => {
       const srcBadges = (it.sources || [])
-        .map((s) => `<span class="src src-${esc(s)}">${({ a: '源 A', b: '源 B', m: '磁力搜索' })[s] || esc(s)}</span>`)
+        .map((s) => {
+          if (s === 'm') {
+            // 磁力是多个源汇总的，直接写出是哪几个源搜到的（用户自己起的名字）
+            const names = (it.mSources || []).filter(Boolean);
+            const shown = names.length > 2 ? `${names.slice(0, 2).join(' / ')} 等 ${names.length} 个` : names.join(' / ');
+            const label = names.length ? `磁力 · ${shown}` : '磁力搜索';
+            return `<span class="src src-m" title="${esc(names.join(' / '))}">${esc(label)}</span>`;
+          }
+          return `<span class="src src-${esc(s)}">${({ a: '源 A', b: '源 B' })[s] || esc(s)}</span>`;
+        })
         .join('');
       const qTags = qualityTags(it.quality)
         .map((x) => `<span class="tag hot">${esc(x)}</span>`)
@@ -1975,6 +1984,7 @@ $('btnCheckUpdate2').addEventListener('click', checkUpdate);
 const WEEK_NAME = ['', '每周一', '每周二', '每周三', '每周四', '每周五', '每周六', '每周日'];
 const DOW_NAME = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 let subItems = [];
+let subData = {}; // 最近一次 /api/sub 的结果：重绘时要沿用，否则「TMDB 已配」会被当成没配
 let editingSubId = '';
 const subBusy = new Set();
 
@@ -2055,7 +2065,8 @@ function subCard(s) {
 </div>`;
 }
 
-function renderSubs(d) {
+function renderSubs(d = subData) {
+  if (d) subData = d;
   const stats = d?.stats || {};
   const limit = stats.dailyLimit || 36;
   const used = stats.dailyUsed || 0;

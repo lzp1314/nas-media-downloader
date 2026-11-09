@@ -1367,7 +1367,6 @@ $('btnMgAdd').addEventListener('click', async () => {
     name: name || (() => { try { return new URL(url).host; } catch { return '未命名'; } })(),
     enabled: true,
     ...cfg,
-    detailLimit: 5,
     timeout: 12000,
   });
   try {

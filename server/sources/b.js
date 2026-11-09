@@ -188,7 +188,9 @@ function flattenLinks(data) {
       .map((it) => {
         const url = String(it.link || it.url || '').trim();
         if (!url) return null;
-        const kind = it.type_key || (/^magnet:/i.test(url) ? 'magnet' : /^ed2k:/i.test(url) ? 'ed2k' : 'pan');
+        const kind = it.type_key || (/^magnet:/i.test(url) ? 'magnet' : 'other');
+        // 只保留磁力 / 种子，网盘分享、电驴、普通网页链接在源头就丢掉
+        if (!['magnet', 'torrent', 'seed'].includes(kind)) return null;
         return {
           group: label,
           name: String(it.name || '').trim(),

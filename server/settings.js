@@ -81,10 +81,6 @@ function defaults() {
       lastSync: 0,
       count: 0,
     },
-    /** 网盘分享解析：只存浏览器 Cookie，不下发到界面、不进仓库 */
-    pan: {
-      cookie: '',
-    },
     /** 豆瓣：只做元数据（总集数/别名），Cookie 与用户 id 都留空则完全不用 */
     douban: {
       cookie: '',
@@ -140,6 +136,8 @@ let cache = null;
 
 /** 统一规范化：目录必须存在且为绝对路径，保证白名单比较不因写法不同而误判 */
 function normalize(s) {
+  // 网盘功能已整体下线：历史配置里存过的网盘 Cookie 读进来就丢掉
+  delete s.pan;
   // 从旧版本升级：历史配置里的目录在容器内全都不存在（换了挂载点），
   // 且环境里能识别出新的库时，直接用新的这份，避免界面上看不到刚挂载的库
   if (DEFAULT_ROOTS.length && Array.isArray(s.dirs) && s.dirs.length > 0) {
@@ -201,6 +199,13 @@ function migrate(raw) {
   if (!(Number(raw.v) >= 3)) {
     if (raw.subscribe && typeof raw.subscribe === 'object') raw.subscribe.dailyLimit = 36;
     raw.v = 3;
+    changed = true;
+  }
+  // v4：网盘解析整块下线，历史配置里存过的网盘 Cookie 一并删除并写回文件，
+  // 既不再被读取，也不该继续躺在 NAS 的配置目录里。
+  if (!(Number(raw.v) >= 4)) {
+    if ('pan' in raw) delete raw.pan;
+    raw.v = 4;
     changed = true;
   }
   return changed;
@@ -290,7 +295,6 @@ export function publicSettings() {
       configured: Boolean(s.qbit.username && s.qbit.password),
     },
     aria2: { rpc: s.aria2.rpc, secretSet: Boolean(s.aria2.secret) },
-    pan: { configured: Boolean(s.pan?.cookie), cookieTail: tail(s.pan?.cookie) },
     douban: {
       cookieSet: Boolean(s.douban?.cookie),
       uid: s.douban?.uid || '',

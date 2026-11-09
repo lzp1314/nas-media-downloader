@@ -19,22 +19,12 @@ export function engineMode() {
 }
 
 /**
- * 按链接类型挑引擎——自动分流的唯一入口。
- *
- * 种子·磁力：qBittorrent 基于 libtorrent，有 DHT/PEX/uTP，找 peer 和连内网穿透都强于 aria2，
- *            配好了就交给它；没配就回落 aria2，不至于因为没装 qB 就不能下。
- * http 直链 ：qB 的 /torrents/add 只吃磁力和 .torrent 地址，喂普通直链必失败，
- *            所以无论档位怎么设都固定走 aria2（多连接分段下载也正是它的强项）。
+ * 挑下载引擎：种子 / 磁力优先给 qBittorrent（DHT/PEX/uTP 找 peer 更强），
+ * 没配 qB 时回落 aria2，不至于因为没装 qB 就下不了。
+ * 项目只下种子与磁力，不再有 http 直链分流；kind 参数保留给调用方。
  */
 export function routeFor(kind) {
   const mode = engineMode();
-  if (kind === 'direct') {
-    return {
-      engine: aria2Engine,
-      mode,
-      note: mode === 'qbit' ? '直链改由 aria2 处理（qB 不支持 http 直链）' : mode === 'auto' ? '直链走 aria2' : '',
-    };
-  }
   if (mode === 'aria2') return { engine: aria2Engine, mode, note: '' };
   if (mode === 'qbit') return { engine: qbitEngine, mode, note: '' };
   if (qbitReady()) return { engine: qbitEngine, mode, note: '种子走 qB' };

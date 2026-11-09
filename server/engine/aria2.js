@@ -112,8 +112,8 @@ class Aria2Engine {
   /**
    * 三种入口：
    *  - torrent(base64) + selectFile：只下种子里勾选的文件（剧集选集）
-   *  - urls：网盘直链 / 普通 http 下载，可带 header 与文件名
    *  - magnet：整包下载（旧行为）
+   *  - urls：普通 http 下载（引擎保留的通用能力；本项目只下种子 / 磁力，不会走这里）
    */
   async add({ magnet, dir, selectFile, torrent, urls }) {
     const opts = { dir };

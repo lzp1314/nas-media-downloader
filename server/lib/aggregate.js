@@ -19,35 +19,6 @@ const QUALITY_RULES = [
   { label: '480P', rank: 20, re: /(480p|360p|hdrip|cam|ts版|枪版)/i },
 ];
 
-/** 网盘类型代号 → 中文名；站点没给名字时按链接域名兜底 */
-const PAN_LABELS = {
-  baidu: '百度网盘', quark: '夸克网盘', xunlei: '迅雷网盘', '115': '115网盘',
-  ali: '阿里网盘', guangya: '光鸭云盘', yidong: '移动网盘', uc: 'UC网盘',
-  '123': '123云盘', lanzou: '蓝奏云', tianyi: '天翼云盘', other: '其他网盘',
-  direct: '直链', ed2k: '电驴',
-};
-
-const HOST_RULES = [
-  [/pan\.baidu|yun\.baidu/i, 'baidu'],
-  [/quark/i, 'quark'],
-  [/xunlei/i, 'xunlei'],
-  [/115\.com/i, '115'],
-  [/alipan|aliyundrive/i, 'ali'],
-  [/uc\.cn/i, 'uc'],
-  [/189\.cn/i, 'tianyi'],
-  [/139\.com/i, 'yidong'],
-  [/123(pan|684|865|912)/i, '123'],
-  [/lanzou/i, 'lanzou'],
-];
-
-export function inferPan(url, hint = '') {
-  const key = String(hint || '').toLowerCase();
-  if (PAN_LABELS[key]) return { key, label: PAN_LABELS[key] };
-  const s = String(url || '');
-  for (const [re, k] of HOST_RULES) if (re.test(s)) return { key: k, label: PAN_LABELS[k] };
-  return { key: 'other', label: '网盘' };
-}
-
 export function detectQuality(name, fallback = '') {
   const text = String(name || '');
   for (const q of QUALITY_RULES) {
@@ -131,21 +102,21 @@ export function normalizeResources(packs) {
     for (const g of pack.groups || []) {
       for (const it of g.items || []) {
         const url = it.magnet || it.url || it.torrentUrl || it.down || '';
-        // 站点把链接锁住时条目仍然要列出（名字/网盘/提取码），只是没有可点的链接；
-        // 种子只有 id（磁力要另外换）也同样要列出来，否则用户会以为站点没给
+        // 站点把链接锁住、或只给种子 id（磁力要另外换）时，条目仍然要列出来，
+        // 只是没有可点的链接，否则用户会以为站点没给
         if (!url && !it.locked && !it.seedId) continue;
         const dedupe = it.dedupeKey || it.hash || url || `${pack.source}:${g.group}:${it.name}`;
         if (seen.has(dedupe)) continue;
         seen.add(dedupe);
         const isMagnet = /^magnet:/i.test(url);
-        // 站点只给 .torrent 下载地址时也算种子，不能因为不是 magnet: 开头就归成网盘
+        // 站点只给 .torrent 下载地址时也算种子，不能因为不是 magnet: 开头就漏掉
         const isTorrent = !isMagnet && (it.kind === 'torrent' || Boolean(it.torrentUrl));
         // 只有种子 id、链接还没换的，先按种子归类，点下载时再换磁力
         const isSeed = isMagnet || isTorrent || (it.kind === 'seed' && Boolean(it.seedId));
+        // 只收种子 / 磁力：网盘、电驴、普通网页直链一律不进结果
+        if (!isSeed) continue;
         const q = detectQuality(`${it.name || ''} ${g.group || ''}`, '');
-        const kind = isMagnet ? 'magnet' : isTorrent ? 'torrent' : isSeed ? 'seed' : it.kind || (/^ed2k:/i.test(url) ? 'ed2k' : 'pan');
-        const pan = inferPan(url, it.panKey || (kind === 'pan' ? '' : kind));
-        const customName = String(it.typeName || it.panName || '').trim();
+        const kind = isMagnet ? 'magnet' : isTorrent ? 'torrent' : 'seed';
         flat.push({
           name: it.name || '未命名资源',
           size: it.size || '',
@@ -155,8 +126,6 @@ export function normalizeResources(packs) {
           seedId: String(it.seedId || ''),
           needVip: Boolean(it.needVip),
           kind,
-          panKey: pan.key,
-          panName: isSeed ? '种子' : (customName && customName !== '网盘' ? customName : pan.label),
           spec: String(it.spec || it.quality || g.group || '').trim(),
           locked: Boolean(it.locked),
           code: String(it.code || '').trim(),
@@ -172,9 +141,6 @@ export function normalizeResources(packs) {
     }
   }
   flat.sort((a, b) => {
-    const am = (a.magnet || a.kind === 'torrent' || a.kind === 'seed') ? 1 : 0;
-    const bm = (b.magnet || b.kind === 'torrent' || b.kind === 'seed') ? 1 : 0;
-    if (am !== bm) return bm - am;
     if (a.locked !== b.locked) return a.locked ? 1 : -1;
     return b.rank - a.rank;
   });
@@ -192,9 +158,6 @@ export function normalizeResources(packs) {
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || b[1].length - a[1].length;
     })
     .map(([label, items]) => ({ label: label === '其他' ? '其他资源' : label, items }));
-  const seeds = flat.filter((x) => x.kind === 'magnet' || x.kind === 'torrent' || x.kind === 'seed');
-  const seedSet = new Set(seeds);
-  const pans = flat.filter((x) => !seedSet.has(x));
   const tally = (rows, pick) => {
     const m = new Map();
     for (const r of rows) {
@@ -205,13 +168,8 @@ export function normalizeResources(packs) {
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'));
   };
-  // 两类资源各有一套自己的维度：种子看规格，网盘看网盘名，前端按当前类型分别展示
-  const seedSpecs = tally(seeds, (x) => x.spec || x.quality);
-  const panNames = tally(pans, (x) => x.panName);
-  const specs = [
-    ...seedSpecs.map((x) => ({ ...x, kind: 'seed' })),
-    ...panNames.map((x) => ({ ...x, kind: 'pan' })),
-  ];
-  const facets = { total: flat.length, seed: seeds.length, pan: pans.length, seedSpecs, panNames, specs };
+  const seedSpecs = tally(flat, (x) => x.spec || x.quality);
+  const specs = seedSpecs.map((x) => ({ ...x, kind: 'seed' }));
+  const facets = { total: flat.length, seed: flat.length, seedSpecs, specs };
   return { total: flat.length, groups, facets };
 }

@@ -66,7 +66,7 @@ import { bDetail, bSearch, bEnabled } from './sources/b.js';
 import { siteStatus, requireA, hostMap } from './sources/config.js';
 import { searchMagnet, cachedGroups, listSources, saveSources, sourceStatus, testSource } from './sources/magnet.js';
 import { listTorrentFiles, readCachedTorrent, saveTorrentFile } from './sources/torrent.js';
-import { classifyLink, resolveShare, resolveDownloadUrls, detectEpisode, isVideo } from './sources/pan.js';
+import { classifyLink, detectEpisode, isVideo } from './lib/media.js';
 import { createJob, getJob } from './lib/jobs.js';
 import { getHot } from './sources/hot.js';
 import { searchIndex, startIndexSync, indexStatus, loadIndex } from './indexer.js';
@@ -426,9 +426,6 @@ on('POST', '/api/resolve', async (req, res) => {
               ? { groups: cachedGroups(v.id), meta: {}, seedCount: 0 }
               : await bDetail(v.id);
         if (d.needLogin) needLogin = true;
-        if (d.wp?.locked) {
-          notes.push(`${label}：共 ${d.wp.total} 条网盘资源，其中 ${d.wp.locked} 条的链接被站点锁住（需登录或会员），重新打开资源面板可刷新`);
-        }
         if (d.image && !image) image = d.image;
         for (const [k, val] of Object.entries(d.meta || {})) {
           if (val && !meta[k] && String(val).length < 40) meta[k] = val;
@@ -497,10 +494,6 @@ function putLink(kind, payload) {
   return rid;
 }
 
-function safeName(s) {
-  return String(s || '').replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/^\.+/, '_').slice(0, 180) || 'download';
-}
-
 /** 站点只给 .torrent 下载地址时：取回种子 → 还原磁力 → 落盘缓存，之后完全复用磁力链路 */
 const seedCache = new Map();
 async function loadSeed(rawUrl) {
@@ -564,6 +557,8 @@ async function resolveLinkPayload(link, opts = {}) {
     // 种子已落盘，listTorrentFiles 会直接命中缓存，选集/下载与普通磁力完全一致
     return resolveLinkPayload({ kind: 'magnet', url: seed.magnet });
   }
+  // 粘贴框里直接贴 .torrent 地址：落盘后走和普通磁力完全一样的选集链路
+  if (link.kind === 'torrent') return resolveLinkPayload(null, { torrentUrl: link.url });
   if (link.kind === 'magnet') {
     const info = await listTorrentFiles(link.url);
     const files = info.files.map((f) => {
@@ -589,30 +584,7 @@ async function resolveLinkPayload(link, opts = {}) {
       notes: [info.cached ? '种子目录已缓存，勾选后直接下载' : '已读到种子里的文件清单，勾选后只下选中的集数'],
     };
   }
-  if (link.kind === 'url') {
-    const r = await resolveShare(link.url, link.passcode);
-    const files = r.files.map((f) => ({
-      id: f.id,
-      name: f.name,
-      path: f.path,
-      size: f.size,
-      sizeText: f.sizeText,
-      episode: f.episode,
-      video: f.video,
-      hasDirect: /^https?:\/\//i.test(f.url || '') || ['quark', 'uc', 'direct'].includes(r.provider),
-    }));
-    const rid = putLink('pan', { kind: 'pan', share: r.share, name: r.title });
-    return {
-      ok: true,
-      kind: 'pan',
-      rid,
-      title: r.title,
-      files,
-      needCookie: r.needCookie,
-      notes: r.notes,
-    };
-  }
-  throw new Error('没识别出磁力链接或网盘分享链接');
+  throw new Error('只支持磁力链接或 .torrent 种子地址');
 }
 
 /** 立刻回任务号，避免长请求被反代掐断 */
@@ -624,7 +596,7 @@ on('POST', '/api/link/resolve', async (req, res) => {
   }
   const link = classifyLink(text || url);
   if (link.kind === 'unknown') {
-    return sendJson(res, 400, { error: '没识别出磁力链接或网盘分享链接' });
+    return sendJson(res, 400, { error: '只支持磁力链接或 .torrent 种子地址；网盘分享链接请到网盘官方客户端转存' });
   }
   const job = createJob(() => resolveLinkPayload(link));
   sendJson(res, 200, { pending: true, jobId: job.id, kind: link.kind });
@@ -654,23 +626,17 @@ on('POST', '/api/download', async (req, res) => {
     }
     const picked = Array.isArray(ids) ? ids : [];
     if (!picked.length) return sendJson(res, 400, { error: '请先勾选要下载的文件' });
-    if (rec.kind === 'magnet') {
-      const sel = picked.map(Number).filter((n) => Number.isInteger(n) && n > 0).join(',');
-      if (!sel) return sendJson(res, 400, { error: '文件序号不合法' });
-      route = routeFor('torrent');
-      if (route.engine.name === 'qbit') {
-        // qBittorrent 用磁力原链接添加，拿到文件列表后再把未勾选的设为不下载
-        r = await route.engine.add({ magnet: rec.magnet, dir: target.abs, selectFile: sel, hash: rec.hash });
-      } else {
-        const buf = await readCachedTorrent(rec.hash);
-        if (!buf) return sendJson(res, 400, { error: '种子缓存已失效，请重新解析' });
-        r = await route.engine.add({ torrent: buf.toString('base64'), dir: target.abs, selectFile: sel });
-      }
+    if (rec.kind !== 'magnet') return sendJson(res, 400, { error: '解析结果已过期，请重新解析一次链接' });
+    const sel = picked.map(Number).filter((n) => Number.isInteger(n) && n > 0).join(',');
+    if (!sel) return sendJson(res, 400, { error: '文件序号不合法' });
+    route = routeFor('torrent');
+    if (route.engine.name === 'qbit') {
+      // qBittorrent 用磁力原链接添加，拿到文件列表后再把未勾选的设为不下载
+      r = await route.engine.add({ magnet: rec.magnet, dir: target.abs, selectFile: sel, hash: rec.hash });
     } else {
-      const urls = await resolveDownloadUrls(rec.share, picked);
-      for (const u of urls) u.out = safeName(u.out);
-      route = routeFor('direct');
-      r = await route.engine.add({ urls, dir: target.abs });
+      const buf = await readCachedTorrent(rec.hash);
+      if (!buf) return sendJson(res, 400, { error: '种子缓存已失效，请重新解析' });
+      r = await route.engine.add({ torrent: buf.toString('base64'), dir: target.abs, selectFile: sel });
     }
   } else if (torrentUrl) {
     // 站点只给 .torrent：还原成磁力（带 tracker），两个引擎都走现成的整包下载分支
@@ -847,7 +813,7 @@ on('GET', '/api/disk', async (req, res) => {
 
 on('POST', '/api/settings', async (req, res) => {
   const patch = await readBody(req);
-  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'pan', 'douban', 'tmdb', 'subscribe'];
+  const allowed = ['engine', 'dirs', 'defaultDir', 'aria2', 'qbit', 'a', 'b', 'douban', 'tmdb', 'subscribe'];
   const clean = {};
   for (const k of allowed) if (k in patch) clean[k] = patch[k];
   if ('engine' in clean && !['auto', 'aria2', 'qbit'].includes(clean.engine)) {

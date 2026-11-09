@@ -384,19 +384,8 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .res-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 3px; font-size: 14px; color: var(--dim); }
 .res-meta .sz { color: var(--accent-2); }
 .res-meta .kind { padding: 0 5px; border-radius: 4px; background: rgba(255, 176, 32, .12); color: #ffcb6b; font-size: 13px; }
-.res-meta .kind.pan-baidu { background: rgba(64, 158, 255, .16); color: #8cc4ff; }
-.res-meta .kind.pan-quark { background: rgba(130, 105, 255, .18); color: #c3b3ff; }
-.res-meta .kind.pan-xunlei { background: rgba(255, 120, 90, .16); color: #ffb199; }
-.res-meta .kind.pan-115 { background: rgba(70, 200, 190, .16); color: #8fe3d8; }
-.res-meta .kind.pan-ali { background: rgba(255, 150, 40, .16); color: #ffc27a; }
-.res-meta .kind.pan-guangya { background: rgba(90, 200, 120, .16); color: #a6e8b4; }
-.res-meta .kind.pan-yidong { background: rgba(70, 170, 240, .16); color: #9fd4ff; }
-.res-meta .kind.pan-uc { background: rgba(240, 110, 180, .16); color: #ffb3d9; }
-.res-meta .kind.pan-other { background: rgba(160, 170, 190, .16); color: #c3cbd9; }
-.res-meta .code { color: var(--accent-2); font-size: 13px; }
 .res-meta .lock { padding: 0 5px; border-radius: 4px; background: rgba(255, 90, 90, .12); color: #ff9e9e; font-size: 13px; }
 .res.locked { opacity: .78; }
-.lock-tip { align-self: center; font-size: 13px; color: var(--dim); }
 
 /* ---------------- 任务 ---------------- */
 .section-head { display: flex; align-items: center; gap: 12px; padding: 22px 0 14px; }
@@ -934,8 +923,6 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   font-size: 13px; font-weight: 600;
 }
 .link-row .ls { flex: 0 0 auto; color: var(--accent-2); font-size: 13.5px; }
-.link-row .lk { flex: 0 0 auto; color: var(--dim); font-size: 13px; }
-.link-row .lk.ok { color: #7fe3c4; }
 
 @media (max-width: 760px) {
   .link-dialog { width: 100%; }

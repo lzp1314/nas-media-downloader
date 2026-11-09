@@ -438,7 +438,7 @@ async function openSheet(item) {
     .filter(Boolean)
     .join(' ');
   $('sPoster').innerHTML = posterHtml(item, true);
-  $('sBody').innerHTML = `<div class="state"><div class="state-inner"><div class="spinner"></div>正在解析磁力与网盘资源…</div></div>`;
+  $('sBody').innerHTML = `<div class="state"><div class="state-inner"><div class="spinner"></div>正在解析磁力与种子资源…</div></div>`;
   $('sheet').classList.add('on');
   $('sheetMask').classList.add('on');
 
@@ -506,13 +506,11 @@ function renderResources(data, item) {
     return;
   }
 
-  // 种子和网盘是两套维度：种子看规格（WEB-4K/杜比视界…），网盘看网盘名（夸克/百度…）
-  // 所以先按类型拆开，各自分桶、各自渲染，切换时只显示其中一块
+  // 只展示种子 / 磁力，按规格（WEB-4K / 1080P…）分桶
   const rows = data.groups.flatMap((g) => (g.items || []).map((it) => ({ ...it })));
-  // kind=seed 表示站点只给了种子 id，磁力要另外换，也属于种子这一档
+  // kind=seed 表示站点只给了种子 id，磁力要另外换，也属于这一档
   const isSeedRow = (it) => Boolean(it.magnet || it.torrentUrl || it.kind === 'torrent' || it.kind === 'seed' || it.seedId);
   const seedRows = rows.filter(isSeedRow);
-  const panRows = rows.filter((it) => !isSeedRow(it));
 
   const bucketize = (list, pick) => {
     const order = [];
@@ -529,41 +527,25 @@ function renderResources(data, item) {
   };
 
   const seedBuckets = bucketize(seedRows, (it) => it.spec || it.quality);
-  const panBuckets = bucketize(panRows, (it) => it.panName);
 
   const rowHtml = (it) => {
-    const panCls = `pan-${String(it.panKey || 'other').replace(/[^a-z0-9_-]/gi, '')}`;
-    const isSeed = isSeedRow(it);
-    const kindTag = isSeed
-      ? `<span class="kind seed">${it.magnet ? '磁力' : '种子'}</span>`
-      : `<span class="kind ${panCls}">${it.kind === 'ed2k' ? '电驴' : esc(it.panName || '网盘')}</span>`;
-    const extra = [
-      it.code ? `<span class="code">提取码 ${esc(it.code)}</span>` : '',
-      it.locked ? '<span class="lock">需会员取链接</span>' : '',
-    ].filter(Boolean).join('');
+    const extra = it.locked ? '<span class="lock">需会员取链接</span>' : '';
     const seedAttr = it.torrentUrl ? ` data-torrent="${esc(it.torrentUrl)}"` : '';
     const dlVal = esc(it.magnet || it.torrentUrl || '');
     const seedIdAttr = !it.magnet && !it.torrentUrl && it.seedId ? ` data-seedid="${esc(it.seedId)}"` : '';
-    // 磁力或 .torrent 都能看目录选集；只有种子 id 的先换磁力；网盘展开分享列表；锁定条目只展示信息
-    const acts = isSeed
-      ? `<div class="res-acts">
+    // 磁力或 .torrent 都能看目录选集；只有种子 id 的先换磁力
+    const acts = `<div class="res-acts">
           <button class="btn ghost sm" data-files="${dlVal}"${seedAttr}${seedIdAttr} data-name="${esc(it.name)}">选集</button>
           <button class="btn primary sm" data-dl="${dlVal}"${seedAttr}${seedIdAttr} data-name="${esc(it.name)}">下载</button>
-        </div>`
-      : it.locked
-        ? '<div class="res-acts"><span class="lock-tip">登录后可刷新链接</span></div>'
-        : `<div class="res-acts">
-          <button class="btn ghost sm" data-files="${esc(it.url)}" data-name="${esc(it.name)}">展开</button>
-          <button class="btn ghost sm" data-copy="${esc(it.url)}">复制链接</button>
         </div>`;
-    const rowSpec = isSeed ? (it.spec || it.quality || '其他') : (it.panName || '其他');
-    return `<div class="res${it.locked ? ' locked' : ''}" data-rk="${isSeed ? 'seed' : 'pan'}" data-spec="${esc(rowSpec)}">
+    const rowSpec = it.spec || it.quality || '其他';
+    return `<div class="res${it.locked ? ' locked' : ''}" data-rk="seed" data-spec="${esc(rowSpec)}">
       <div class="res-main">
         <div class="res-name">${esc(it.name)}</div>
         <div class="res-meta">
           <span class="sz">${esc(it.size || '大小未知')}</span>
           <span class="src">${esc(it.sourceLabel)}</span>
-          ${kindTag}
+          <span class="kind seed">${it.magnet ? '磁力' : '种子'}</span>
           ${extra}
         </div>
       </div>
@@ -596,36 +578,25 @@ function renderResources(data, item) {
         : '<button class="btn ghost sm" id="seedRetry" type="button">再试一次</button>')
     : '这个片源没有种子资源';
   $('sBody').innerHTML =
-    `<div class="status" style="margin:10px 0 2px">${seedRows.length} 个种子 · ${panRows.length} 个网盘</div>` +
+    `<div class="status" style="margin:10px 0 2px">${seedRows.length} 个种子 / 磁力</div>` +
     `<div class="res-filter">
       <div class="res-tabs">
-        <button class="res-tab${seedRows.length ? '' : ' off'}" data-rk="seed" type="button">⬇ 种子 / 磁力 <i>${seedRows.length}</i></button>
-        <button class="res-tab${panRows.length ? '' : ' off'}" data-rk="pan" type="button">☁ 网盘资源 <i>${panRows.length}</i></button>
+        <button class="res-tab active" data-rk="seed" type="button">⬇ 种子 / 磁力 <i>${seedRows.length}</i></button>
       </div>
       <div class="res-chips" id="resChips"></div>
     </div>` +
-    `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴链接解析 / 选集</button></div>` +
+    `<div class="sheet-tools"><button class="btn ghost sm" id="sheetLinkPaste">🔗 粘贴磁力链接选集</button></div>` +
     blockHtml('seed', seedBuckets, seedTip, true) +
-    blockHtml('pan', panBuckets, '这个片源没有网盘资源') +
     (notes.length ? `<div class="notebar" style="margin-top:12px">${notes.map(esc).join('<br />')}</div>` : '');
 
-  // 两个类型各记一份自己的筛选项，来回切换不互相干扰；只隐藏已渲染的行，不重新请求
-  const bucketsOf = { seed: seedBuckets, pan: panBuckets };
-  const pickOf = { seed: '全部', pan: '全部' };
-  let curKind = seedRows.length ? 'seed' : 'pan';
-
+  // 只按规格筛种子；只隐藏已渲染的行，不重新请求
+  let curSpec = '全部';
   const applyResFilter = () => {
-    const block = $('sBody').querySelector(`.res-block[data-block="${curKind}"]`);
-    $('sBody').querySelectorAll('.res-block').forEach((b) => {
-      b.hidden = b !== block;
-    });
-    $('sBody').querySelectorAll('.res-tab').forEach((b) => {
-      b.classList.toggle('active', b.dataset.rk === curKind);
-    });
+    const block = $('sBody').querySelector('.res-block[data-block="seed"]');
     if (block) {
-      const pick = pickOf[curKind];
+      block.hidden = false;
       block.querySelectorAll('.res').forEach((row) => {
-        row.hidden = !(pick === '全部' || row.dataset.spec === pick);
+        row.hidden = !(curSpec === '全部' || row.dataset.spec === curSpec);
       });
       block.querySelectorAll('.qgroup').forEach((g) => {
         const n = g.querySelectorAll('.res:not([hidden])').length;
@@ -634,30 +605,20 @@ function renderResources(data, item) {
         if (c) c.textContent = `${n} 个`;
       });
     }
-    // chips 跟着当前类型走：种子给规格，网盘给网盘名，不混着摆
-    const buckets = bucketsOf[curKind];
-    const sum = buckets.reduce((n, b) => n + b.items.length, 0);
-    const pick = pickOf[curKind];
+    const sum = seedBuckets.reduce((n, b) => n + b.items.length, 0);
     $('resChips').innerHTML =
-      `<button class="res-chip${pick === '全部' ? ' active' : ''}" data-spec="全部" type="button">全部 <i>${sum}</i></button>` +
-      buckets
+      `<button class="res-chip${curSpec === '全部' ? ' active' : ''}" data-spec="全部" type="button">全部 <i>${sum}</i></button>` +
+      seedBuckets
         .map(
-          (b) => `<button class="res-chip${pick === b.label ? ' active' : ''}" data-spec="${esc(b.label)}" type="button">${esc(b.label)} <i>${b.items.length}</i></button>`,
+          (b) => `<button class="res-chip${curSpec === b.label ? ' active' : ''}" data-spec="${esc(b.label)}" type="button">${esc(b.label)} <i>${b.items.length}</i></button>`,
         )
         .join('');
   };
 
   $('sBody').querySelector('.res-filter').addEventListener('click', (e) => {
-    const tab = e.target.closest('.res-tab');
-    if (tab) {
-      if (tab.dataset.rk === curKind) return;
-      curKind = tab.dataset.rk;
-      applyResFilter();
-      return;
-    }
     const chip = e.target.closest('.res-chip');
     if (chip) {
-      pickOf[curKind] = chip.dataset.spec;
+      curSpec = chip.dataset.spec;
       applyResFilter();
     }
   });
@@ -718,8 +679,8 @@ function renderResources(data, item) {
     btn.addEventListener('click', async () => {
       const link = btn.dataset.copy || '';
       if (await copyText(link)) {
-        // 复制成功后用户去迅雷/网盘客户端粘贴即可；迅雷客户端默认会自己读剪贴板
-        toast('链接已复制，到迅雷或网盘客户端里粘贴即可');
+        // 复制成功后用户去下载器里粘贴即可
+        toast('链接已复制，到下载器里粘贴即可');
         return;
       }
       showCopyBox(link);
@@ -802,7 +763,7 @@ function openLinkModal(text = '', opts = {}) {
   $('linkDownload').textContent = '下载选中';
   $('linkEpFilter').value = '';
   state.link = null;
-  // 资源列表里的 .torrent 直链按种子解析；用户手动改了输入框就回到普通链接解析
+  // 资源列表里的 .torrent 直链按种子解析；用户手动改了输入框就走链接识别
   state.linkTorrent = opts.torrentUrl || '';
   state.linkOrigin = text || '';
   // 这一行本该是哪部片：解析出来的种子名跟它对不上时提示，避免下错片
@@ -973,7 +934,6 @@ function renderLinkFiles() {
           <input type="checkbox" data-lid="${esc(x.id)}" ${on ? 'checked' : ''} />
           <span class="ln">${ep}${esc(x.name)}</span>
           <span class="ls">${esc(x.sizeText || (x.size ? fmtSize(x.size) : ''))}</span>
-          ${r.kind === 'pan' ? `<span class="lk${x.hasDirect ? ' ok' : ''}">${x.hasDirect ? '可直下' : '仅查看'}</span>` : ''}
         </label>`;
       }).join('')
     : '<div class="status">没有匹配的文件，换个集数或关键词试试</div>';
@@ -1031,7 +991,7 @@ $('linkDownload').addEventListener('click', () => {
   const r = state.link;
   if (!r || !r.selected.size) return;
   const ids = [...r.selected];
-  const name = r.kind === 'magnet' ? r.title : `选中的 ${ids.length} 个文件`;
+  const name = r.title || `选中的 ${ids.length} 个文件`;
   closeLinkModal();
   openDirPicker('', name, state.lastType || '', { rid: r.rid, ids, count: ids.length, kind: r.kind });
 });
@@ -1550,7 +1510,7 @@ async function loadSettingsView() {
     if (mode === 'auto') {
       const qb = engs.qbit;
       $('engineStatus').innerHTML =
-        engLine('aria2', '网盘直链', engs.aria2) +
+        engLine('aria2', '种子回落', engs.aria2) +
         (qb
           ? engLine('qBittorrent', '种子·磁力', qb)
           : engLine('qBittorrent', '', null, '未填账号密码，种子暂时也交给 aria2 下载'));
@@ -1618,17 +1578,6 @@ async function loadSettingsView() {
     }
 
     $('indexPages').value = s.b.pagesPerCategory || 40;
-    const panOk = Boolean(s.pan?.configured);
-    const pp = $('panPill');
-    pp.textContent = panOk ? '已设置' : '未设置';
-    pp.className = `pill ${panOk ? 'ok' : ''}`;
-    $('panStatus').textContent = panOk
-      ? '已保存 Cookie；重新粘贴分享链接就能取直链下载。'
-      : '未设置 Cookie：仍可查看分享里的文件列表，但不能直接下载到 NAS。';
-    $('panCookie').value = '';
-    $('panCookie').placeholder = panOk
-      ? `已保存 · 末 4 位 ${s.pan?.cookieTail || '****'}（要换就粘贴新的）`
-      : '留空只能看文件列表，不能直连下载';
     renderDouban(s);
     renderTmdb(s);
     renderIndexLine(data.index);
@@ -1766,12 +1715,12 @@ $('btnSrcALogin').addEventListener('click', async () => {
     $('srcAPass').value = '';
     $('srcACode').value = '';
     loadSettingsView();
-    // 登录后详情接口可能放开更多网盘链接：面板开着就立刻重拉，否则下次打开自然刷新
+    // 登录后站点才下发种子明细：面板开着就立刻重拉，否则下次打开自然刷新
     if (state.sheetItem && $('sheet').classList.contains('on')) {
       openSheet(state.sheetItem);
       toast('登录成功，已刷新资源列表');
     } else {
-      toast('登录成功，重新打开资源面板即可刷新网盘链接');
+      toast('登录成功，重新打开资源面板即可刷新种子列表');
     }
   } catch (err) {
     toast(err.message, true);
@@ -1851,29 +1800,6 @@ async function loadDirs() {
     toast(err.message, true);
   }
 }
-
-$('btnSavePan').addEventListener('click', async () => {
-  const cookie = $('panCookie').value.trim();
-  try {
-    await api('/api/settings', { method: 'POST', body: JSON.stringify({ pan: { cookie } }) });
-    $('panCookie').value = '';
-    toast(cookie ? '已保存' : '没有内容可保存');
-    if (cookie) loadSettingsView();
-  } catch (err) {
-    toast(err.message, true);
-  }
-});
-
-$('btnClearPan').addEventListener('click', async () => {
-  try {
-    await api('/api/settings', { method: 'POST', body: JSON.stringify({ pan: { cookie: '' } }) });
-    $('panCookie').value = '';
-    toast('已清空');
-    loadSettingsView();
-  } catch (err) {
-    toast(err.message, true);
-  }
-});
 
 function renderDouban(s) {
   const ok = Boolean(s?.douban?.cookieSet);

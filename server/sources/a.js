@@ -10,54 +10,7 @@ import { requireA } from './config.js';
  * - 站点地址全部来自 sites.json，代码里不写死
  */
 /**
- * 解析详情接口里的网盘资源（与种子是两套数据）。
- * 站点把网盘按类型分组放在 movies_online_seed，中文名在 movies_online_seed_type；
- * 未登录/非会员时大部分条目的 link 为空，这些条目仍然列出并标记「需会员取链接」。
- */
-export function parseWpGroups(d) {
-  const labels = {};
-  for (const t of Array.isArray(d?.movies_online_seed_type) ? d.movies_online_seed_type : []) {
-    if (t && t.value) labels[String(t.value)] = String(t.label || t.value);
-  }
-  const groups = [];
-  let total = 0;
-  let locked = 0;
-  let seq = 0;
-  for (const [key, arr] of Object.entries(d?.movies_online_seed || {})) {
-    if (!Array.isArray(arr) || arr.length === 0) continue;
-    const label = labels[key] || key;
-    const items = arr
-      .map((raw) => {
-        seq += 1;
-        const url = String(raw.link || raw.url || '').trim();
-        const isLocked = !url;
-        total += 1;
-        if (isLocked) locked += 1;
-        return {
-          group: label,
-          name: String(raw.seed_name || raw.name || '').trim(),
-          size: '',
-          magnet: '',
-          url,
-          panKey: key,
-          panName: label,
-          typeName: label,
-          kind: 'pan',
-          locked: isLocked,
-          code: String(raw.code || '').trim(),
-          by: String(raw.nickname || '').trim(),
-          time: String(raw.created_at || '').trim(),
-          dedupeKey: `a-wp-${raw.id ?? seq}`,
-        };
-      })
-      .filter((it) => it.name || it.url);
-    if (items.length) groups.push({ group: label, items });
-  }
-  return { groups, total, locked, needWpVip: Number(d?.need_wp_vip || 0) === 1 };
-}
-
-/**
- * 解析详情接口里的种子/磁力（与网盘是两套数据）。
+ * 解析详情接口里的种子 / 磁力。
  * 站点常只给 .torrent 下载地址（down）而不给磁力 zlink；这里补全为绝对地址并打上 torrent 标记，
  * 由下载链路把种子还原成磁力。ecca 与 all_seeds 通常是同一批数据，按 id 去重。
  */
@@ -271,7 +224,7 @@ export class SourceA {
     return [];
   }
 
-  /** 详情：返回资源列表（磁力/网盘），未登录时列表为空但会给出提示 */
+  /** 详情：只返回种子 / 磁力资源，未登录时列表为空但会给出提示 */
   async detail(id) {
     const json = await this.request('getVideoDetail', { params: { id } });
     if (!json.success) {
@@ -281,8 +234,6 @@ export class SourceA {
     }
     const d = json.data || {};
     let groups = parseSeedGroups(d, this.base);
-    const wp = parseWpGroups(d);
-    for (const g of wp.groups) groups.push(g);
 
     const seedCount = Number(d.znum || 0);
     const seedGot = groups.filter((g) => g.items.some((x) => x.kind === 'magnet' || x.kind === 'torrent')).length;
@@ -310,7 +261,6 @@ export class SourceA {
       },
       seedCount,
       needLogin: Number(d.need_login || 0) === 1 || (groups.length === 0 && seedCount > 0),
-      wp: { total: wp.total, locked: wp.locked, needWpVip: wp.needWpVip },
       groups,
     };
   }

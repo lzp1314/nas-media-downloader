@@ -23,11 +23,11 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
-  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.22</button>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.23</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
-    <input id="kw" type="text" placeholder="输入影片名称，自动搜索磁力 / 网盘" autocomplete="off" spellcheck="false" />
+    <input id="kw" type="text" placeholder="输入影片名称，自动搜索磁力 / 种子" autocomplete="off" spellcheck="false" />
     <button class="clear" id="btnClear" title="清空" hidden>×</button>
     <button class="go" id="btnSearch">搜索</button>
   </div>
@@ -55,7 +55,7 @@
         </span>
       </div>
       <h1>想看点<span class="grad">什么</span>？</h1>
-      <p>输入片名就行，自动搜磁力与网盘资源，选中直接下到 NAS 硬盘。</p>
+      <p>输入片名就行，自动搜磁力与种子资源，选中直接下到 NAS 硬盘。</p>
       <div class="hot-wrap" id="hotWrap" hidden>
         <div class="hot-head">
           <span class="hot-title">🔥 正在热播</span>
@@ -64,7 +64,7 @@
         </div>
         <div class="hot-groups" id="hotGroups"></div>
       </div>
-      <button class="hero-link" id="btnLinkMode" type="button">🔗 粘贴磁力 / 网盘链接，选集下载</button>
+      <button class="hero-link" id="btnLinkMode" type="button">🔗 粘贴磁力链接，选集下载</button>
     </div>
 
     <div class="resultbar" id="resultbar" hidden>
@@ -144,7 +144,7 @@
         </button>
         <button class="snav" data-panel="sources">
           <span class="sn-ico">◎</span>
-          <span class="sn-txt"><b>片源与网盘</b><small>片源 A/B、网盘 Cookie</small></span>
+          <span class="sn-txt"><b>片源接入</b><small>片源 A/B 账号与片库</small></span>
         </button>
         <button class="snav" data-panel="magnet">
           <span class="sn-ico">⌁</span>
@@ -166,8 +166,8 @@
           <div class="card">
             <div class="card-head"><h3>下载引擎</h3><span class="pill" id="enginePill">检测中</span></div>
             <p class="desc">
-              自动分流会把种子、磁力交给 qBittorrent（有 DHT、PEX、uTP，找 peer 更强），
-              网盘直链交给内置 aria2（多连接分段更快）。没配 qB 时种子自动回落 aria2，不影响使用。
+              自动分流会把种子、磁力交给 qBittorrent（有 DHT、PEX、uTP，找 peer 更强）；
+              没配 qB 时自动回落内置 aria2，不影响使用。本项目只下载种子与磁力。
             </p>
             <div class="field">
               <label>分流方式</label>
@@ -190,14 +190,14 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.22</span></div>
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.23</span></div>
             <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
             <div class="status" id="verStatus"></div>
             <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
           </div>
         </div>
 
-        <!-- 板块二：片源与网盘 -->
+        <!-- 板块二：片源接入 -->
         <div class="spanel" data-panel="sources">
           <div class="card">
             <div class="card-head"><h3>片源接入</h3><span class="pill" id="sitePill">检测中</span></div>
@@ -240,20 +240,6 @@
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-head"><h3>网盘解析</h3><span class="pill" id="panPill">未设置</span></div>
-            <p class="desc">
-              粘贴分享链接就能看里面的剧集列表。部分网盘取下载直链需要登录态：在浏览器登录网盘后把该站点的 Cookie 复制进来，
-              只存在 NAS 的配置目录里，不会出现在界面上，也不会提交或打进镜像。接口地址可用 <code>config/pan-sources.json</code> 覆盖。
-            </p>
-            <div class="field">
-              <label>Cookie</label>
-              <input id="panCookie" data-eye type="password" placeholder="留空只能看文件列表，不能直连下载" />
-              <button class="btn sm" id="btnSavePan">保存</button>
-              <button class="btn sm ghost" id="btnClearPan">清空</button>
-            </div>
-            <div class="status" id="panStatus"></div>
-          </div>
         </div>
 
         <div class="spanel" data-panel="magnet">
@@ -404,9 +390,9 @@
       <h3>解析链接 · 选择剧集</h3>
       <button class="icon" id="linkClose" title="关闭">×</button>
     </div>
-    <p class="tip">粘一条磁力或网盘分享链接（可以连提取码一起复制），先看里面有哪些文件，再勾选要下的集数。</p>
+    <p class="tip">粘一条磁力链接或 .torrent 种子地址，先看里面有哪些文件，再勾选要下的集数。网盘分享链接请先在网盘官方客户端转存。</p>
     <div class="field">
-      <input id="linkInput" placeholder="magnet:?xt=... 或 https://.../s/xxxx 提取码 abcd" />
+      <input id="linkInput" placeholder="magnet:?xt=... 或 https://.../xxx.torrent" />
       <button class="btn sm" id="linkGo">解析</button>
     </div>
     <div class="status" id="linkStatus"></div>
@@ -537,7 +523,7 @@
 <div class="modal" id="verModal" hidden>
   <div class="dialog ver-dialog">
     <h3>版本与更新</h3>
-    <div class="ver-now">当前版本 <b id="verNow">v1.2.22</b></div>
+    <div class="ver-now">当前版本 <b id="verNow">v1.2.23</b></div>
     <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
     <div class="ver-cmd" id="verCmd" hidden>
       <small>在 NAS 的 compose 目录执行：</small>

@@ -4,7 +4,6 @@ node_modules/
 config/*
 !config/sites.example.json
 !config/magnet-sources.example.json
-!config/pan-sources.example.json
 !config/hot-sources.example.json
 
 # 本地测试与运行产物

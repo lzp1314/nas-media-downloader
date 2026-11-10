@@ -301,3 +301,61 @@ export function targetUpperBound(sub, { tmdbTotal = 0, siteTotal = 0, maxEp = 0,
 export function subscribeSettings() {
   return loadSettings().subscribe || {};
 }
+
+/**
+ * 为「电影订阅」挑一个可下载资源。
+ *
+ * 电影没有集号，整部就是一个文件，所以和电视剧按集反查不同：
+ * 直接把搜索池（索引里所有候选 + 整包条目）按清晰度偏好排序，挑最优的一个。
+ * 优先用搜索层就带磁力的成品；没有就展开详情页拿磁力/种子（不按集过滤，整部即命中）。
+ * @returns {{magnet?:string, torrentUrl?:string, name:string, hash:string, quality:number, source:string}|null}
+ */
+export async function findMovieSource(sub, built, { notes = [] } = {}) {
+  const preferred = Number(sub.quality) || 1080;
+  const all = [];
+  for (const arr of built.index.values()) all.push(...arr);
+  all.push(...(built.packs || []));
+  if (!all.length) return null;
+
+  // 1) 搜索层直接带磁力的成品：最快，不用再请求详情
+  const withMag = all.filter((c) => c.magnet).sort((a, b) => byQuality(a, b, preferred));
+  if (withMag.length) {
+    const c = withMag[0];
+    return { magnet: c.magnet, name: c.title, hash: hashOf(c.magnet), quality: c.quality, source: c.source };
+  }
+
+  // 2) 展开带 id 的条目详情页，取第一个磁力/种子（电影整部即可，不按集过滤）
+  for (const cand of all.slice().sort((a, b) => byQuality(a, b, preferred))) {
+    if (!cand.id || !cand.source) continue;
+    if (cand.source !== 'a' && cand.source !== 'b') continue;
+    try {
+      const detail = await cachedDetail(cand);
+      const groups = Array.isArray(detail?.groups) ? detail.groups : [];
+      const hits = [];
+      for (const g of groups) {
+        for (const it of g.items || []) {
+          if (it.kind !== 'magnet' && it.kind !== 'torrent' && it.kind !== 'seed') continue;
+          hits.push({
+            magnet: it.magnet || '',
+            torrentUrl: it.torrentUrl || it.down || '',
+            name: it.name || '',
+            hash: it.hash || hashOf(it.magnet),
+            quality: parseEpisodes(it.name).quality || qualityRank(it.name),
+            needVip: Boolean(it.needVip),
+          });
+        }
+      }
+      if (hits.length) {
+        hits.sort((a, b) => Number(a.needVip) - Number(b.needVip) || byQuality(a, b, preferred));
+        const h = hits[0];
+        await sleep(300 + Math.round(Math.random() * 400));
+        return h.magnet
+          ? { magnet: h.magnet, name: h.name, hash: h.hash || hashOf(h.magnet), quality: h.quality, source: cand.source }
+          : { torrentUrl: h.torrentUrl, name: h.name, quality: h.quality, source: cand.source };
+      }
+    } catch (err) {
+      notes.push(`取「${String(cand.title).slice(0, 24)}」的详情失败：${String(err.message || err).slice(0, 50)}`);
+    }
+  }
+  return null;
+}

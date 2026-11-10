@@ -84,9 +84,12 @@ function normalizeTmdbMeta(raw) {
     name: str(raw.name, 120),
     status: str(raw.status, 40),
     statusCn: str(raw.statusCn, 20),
+    mediaType: raw.mediaType === 'movie' ? 'movie' : 'tv',
     totalEpisodes: Math.max(0, num(raw.totalEpisodes)),
     // 多季剧的集号会重复（每季都从 1 开始），显示时要带季号才不歧义
     totalSeasons: Math.max(0, num(raw.totalSeasons)),
+    releaseDate: day(raw.releaseDate),
+    firstAirDate: day(raw.firstAirDate),
     nextAirDate: day(raw.nextAirDate),
     nextAirEpisode: Math.max(0, num(raw.nextAirEpisode)),
     nextAirSeason: Math.max(0, num(raw.nextAirSeason)),
@@ -117,15 +120,26 @@ export function normalize(raw) {
   const cleanSent = {};
   for (const [k, v] of Object.entries(sent)) {
     const ep = Number(k);
-    if (!Number.isInteger(ep) || ep <= 0) continue;
-    cleanSent[ep] = {
-      at: num(v?.at),
-      name: str(v?.name, 200),
-      hash: str(v?.hash, 60),
-      state: v?.state === 'failed' ? 'failed' : 'ok',
-      tries: num(v?.tries),
-      note: str(v?.note, 200),
-    };
+    // 整数 key = 剧集号；非整数（如电影的 'movie'）原样保留，只做字段清洗
+    if (Number.isInteger(ep) && ep > 0) {
+      cleanSent[ep] = {
+        at: num(v?.at),
+        name: str(v?.name, 200),
+        hash: str(v?.hash, 60),
+        state: v?.state === 'failed' ? 'failed' : 'ok',
+        tries: num(v?.tries),
+        note: str(v?.note, 200),
+      };
+    } else if (v && typeof v === 'object') {
+      cleanSent[k] = {
+        at: num(v?.at),
+        name: str(v?.name, 200),
+        hash: str(v?.hash, 60),
+        state: v?.state === 'failed' ? 'failed' : 'ok',
+        tries: num(v?.tries),
+        note: str(v?.note, 200),
+      };
+    }
   }
   return {
     id,
@@ -135,6 +149,10 @@ export function normalize(raw) {
     doubanId: str(raw.doubanId, 20).trim(),
     // TMDB 条目 id：有了它才能拿「总集数 / 下一集播出日」，没有也不影响补集
     tmdbId: Number(raw.tmdbId) > 0 ? Math.floor(Number(raw.tmdbId)) : 0,
+    // 类型：电视剧（默认）或电影。电影订阅不按集、到点只下一次整包。
+    type: raw.type === 'movie' ? 'movie' : 'tv',
+    // 订阅状态机：''（默认）/ waiting（待上映待开播）/ downloading（已下发）/ done（已下完）
+    state: ['waiting', 'downloading', 'done'].includes(raw.state) ? raw.state : '',
     // TMDB 元数据是程序维护的缓存，不让前端直接写，避免界面把过期数据又塞回来
     tmdbMeta: normalizeTmdbMeta(raw.tmdbMeta),
     totalEpisodes: Math.max(0, num(raw.totalEpisodes)),
@@ -185,7 +203,7 @@ export function addSub(input) {
 }
 
 /** 只允许改这几项，其余（sent/log/统计）由程序维护，避免前端误写 */
-const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDays', 'updateDay', 'updateTime', 'episodesPerNight', 'enabled'];
+const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'type', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDays', 'updateDay', 'updateTime', 'episodesPerNight', 'enabled'];
 
 export function updateSub(id, patch) {
   const db = loadSubs();

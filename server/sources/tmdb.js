@@ -31,6 +31,9 @@ const STATUS_CN = {
   Canceled: '已砍',
   Planned: '已立项',
   Pilot: '试播',
+  Rumored: '传闻中',
+  'Post Production': '后期制作',
+  Released: '已上映',
 };
 
 function cfg() {
@@ -147,6 +150,7 @@ export function normalizeTv(d) {
   const totalEpisodes = Number(d?.number_of_episodes) || 0;
   return {
     id: Number(d?.id) || 0,
+    mediaType: 'tv',
     name: String(d?.name || '').trim(),
     originalName: String(d?.original_name || '').trim(),
     year: String(d?.first_air_date || '').slice(0, 4),
@@ -166,21 +170,101 @@ export function normalizeTv(d) {
   };
 }
 
-/** 搜剧名 → 候选列表（搜索结果不含集数，选中后要再查详情） */
+/** 电影的字段收拢。电影没有集数，只关心上映日、状态，以及别名（拿它当搜索词命中率更高） */
+export function normalizeMovie(d) {
+  const alt = Array.isArray(d?.alternative_titles?.results) ? d.alternative_titles.results : [];
+  const zh = alt
+    .filter((x) => /^(zh|cn|tw|hk)/i.test(String(x?.iso_3166_1 || '')))
+    .slice()
+    .sort((a, b) => regionRank(a?.iso_3166_1) - regionRank(b?.iso_3166_1))
+    .map((x) => x?.title);
+  const en = alt.filter((x) => String(x?.iso_3166_1 || '').toUpperCase() === 'US').map((x) => x?.title);
+  return {
+    id: Number(d?.id) || 0,
+    name: String(d?.title || '').trim(),
+    originalName: String(d?.original_title || '').trim(),
+    year: String(d?.release_date || '').slice(0, 4),
+    releaseDate: String(d?.release_date || ''),
+    mediaType: 'movie',
+    status: String(d?.status || ''),
+    statusCn: STATUS_CN[String(d?.status || '')] || String(d?.status || ''),
+    totalEpisodes: 0,
+    totalSeasons: 0,
+    nextAirDate: '',
+    nextAirSeason: 0,
+    nextAirEpisode: 0,
+    lastAirDate: '',
+    lastAirEpisode: 0,
+    aliases: cleanList([...zh, d?.original_title, ...en], 8),
+  };
+}
+
+/** 把 TMDB 的 tv 候选收成统一形状（带 mediaType 标记） */
+function toTvItem(x) {
+  return {
+    id: Number(x.id) || 0,
+    name: String(x.name || ''),
+    originalName: String(x.original_name || ''),
+    year: String(x.first_air_date || '').slice(0, 4),
+    overview: String(x.overview || '').slice(0, 70),
+    country: Array.isArray(x.origin_country) ? x.origin_country.join('/') : '',
+    mediaType: 'tv',
+  };
+}
+
+/** 把 TMDB 的 movie 候选收成统一形状（带 mediaType 标记） */
+function toMovieItem(x) {
+  return {
+    id: Number(x.id) || 0,
+    name: String(x.title || ''),
+    originalName: String(x.original_title || ''),
+    year: String(x.release_date || '').slice(0, 4),
+    overview: String(x.overview || '').slice(0, 70),
+    country: '',
+    mediaType: 'movie',
+  };
+}
+
+/**
+ * 搜剧名/片名 → 候选列表。
+ * type: 'all'(默认) 同时搜剧集和电影，用 TMDB 的 /search/multi 一次拿全；
+ *       'tv' / 'movie' 只搜对应类型。搜索结果不含集数/详情，选中后再查详情。
+ */
+export async function searchMedia(query, type = 'all') {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  if (type === 'tv') return searchTvOnly(q);
+  if (type === 'movie') return searchMovieOnly(q);
+  const r = await api('/search/multi', { query: q, include_adult: 'false' });
+  return (Array.isArray(r?.results) ? r.results : [])
+    .filter((x) => x.media_type === 'movie' || x.media_type === 'tv')
+    .slice(0, 16)
+    .map((x) => (x.media_type === 'movie' ? toMovieItem(x) : toTvItem(x)))
+    .filter((x) => x.id && x.name);
+}
+
+/** 向后兼容：旧调用方仍按剧名搜，等价于 searchMedia(q, 'tv') */
 export async function searchTv(query) {
+  return searchTvOnly(query);
+}
+
+async function searchTvOnly(query) {
   const q = String(query || '').trim();
   if (!q) return [];
   const r = await api('/search/tv', { query: q, include_adult: 'false' });
   return (Array.isArray(r?.results) ? r.results : [])
     .slice(0, 12)
-    .map((x) => ({
-      id: Number(x.id) || 0,
-      name: String(x.name || ''),
-      originalName: String(x.original_name || ''),
-      year: String(x.first_air_date || '').slice(0, 4),
-      overview: String(x.overview || '').slice(0, 70),
-      country: Array.isArray(x.origin_country) ? x.origin_country.join('/') : '',
-    }))
+    .map(toTvItem)
+    .filter((x) => x.id && x.name);
+}
+
+async function searchMovieOnly(query) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const r = await api('/search/movie', { query: q, include_adult: 'false' });
+  return (Array.isArray(r?.results) ? r.results : [])
+    .slice(0, 12)
+    .map(toMovieItem)
     .filter((x) => x.id && x.name);
 }
 
@@ -193,6 +277,19 @@ export async function tvDetail(id, { maxAge = TTL_DETAIL } = {}) {
   const raw = await api(`/tv/${tid}`, { append_to_response: 'alternative_titles' });
   const data = normalizeTv(raw);
   mem.set(tid, { at: Date.now(), data });
+  return data;
+}
+
+/** 电影详情：上映日、状态、别名。带 6 小时内存缓存（key 加 m 前缀避免和剧集撞 id）。 */
+export async function movieDetail(id, { maxAge = TTL_DETAIL } = {}) {
+  const tid = Number(id);
+  if (!tid) throw new Error('TMDB 条目 id 不合法');
+  const key = `m${tid}`;
+  const hit = mem.get(key);
+  if (hit && Date.now() - hit.at < maxAge) return hit.data;
+  const raw = await api(`/movie/${tid}`, { append_to_response: 'alternative_titles' });
+  const data = normalizeMovie(raw);
+  mem.set(key, { at: Date.now(), data });
   return data;
 }
 

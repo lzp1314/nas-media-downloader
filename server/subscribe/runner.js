@@ -8,7 +8,7 @@ import { scanEpisodes, missingEpisodes, parseEpisodes, pickFileIndexes } from '.
 import { buildEpisodeIndex, findSourceForEpisode, targetUpperBound } from './matcher.js';
 import { listTorrentFiles, readCachedTorrent } from '../sources/torrent.js';
 import { routeFor } from '../engine/index.js';
-import { tmdbReady, tvDetail } from '../sources/tmdb.js';
+import { tmdbReady, tvDetail, movieDetail } from '../sources/tmdb.js';
 
 /**
  * 订阅执行器。
@@ -96,25 +96,93 @@ export function weekdayOfDate(s) {
  */
 const TMDB_TTL = 12 * 3600 * 1000;
 
-/** 拿一次 TMDB 元数据（优先用落盘缓存）。失败不抛，交给调用方降级。 */
-async function ensureTmdbMeta(sub) {
+/** 拿一次 TMDB 元数据（优先用缓存）。失败不抛，交给调用方降级。 */
+async function ensureTmdbMeta(sub, { force = false } = {}) {
   if (!sub.tmdbId || !tmdbReady()) return null;
-  const cached = sub.tmdbMeta;
+  const cached = !force && sub.tmdbMeta;
   if (cached && cached.at && Date.now() - cached.at < TMDB_TTL) return cached;
-  const d = await tvDetail(sub.tmdbId);
+  const fn = sub.type === 'movie' ? movieDetail : tvDetail;
+  const d = await fn(sub.tmdbId, { maxAge: force ? 0 : TMDB_TTL });
   return {
     at: Date.now(),
+    mediaType: d.mediaType,
     name: d.name,
     status: d.status,
     statusCn: d.statusCn,
     totalEpisodes: d.totalEpisodes,
     totalSeasons: d.totalSeasons,
+    firstAirDate: d.firstAirDate,
     nextAirDate: d.nextAirDate,
     nextAirEpisode: d.nextAirEpisode,
     nextAirSeason: d.nextAirSeason,
     lastAirDate: d.lastAirDate,
     lastAirEpisode: d.lastAirEpisode,
+    releaseDate: d.releaseDate,
   };
+}
+
+/**
+ * 判断 TMDB 元数据是否「还没到上映/开播」。
+ * 电影看 releaseDate，剧集看 firstAirDate；状态处于待定档（立项/制作中/后期/传闻）也算等待。
+ * @returns {null|{nextCheckAt:number, message:string}} 非 null 表示应进入等待态
+ */
+export function awaitingRelease(tm) {
+  if (!tm) return null;
+  const now = Date.now();
+  const future = tm.mediaType === 'movie' ? tm.releaseDate : tm.firstAirDate;
+  const pendingStatus = ['Planned', 'In Production', 'Pilot', 'Rumored', 'Post Production'];
+  const statusPending = pendingStatus.includes(tm.status);
+  const dayMs = 24 * 3600 * 1000;
+
+  // 没有公布日期但状态待定：每天查一次确认是否定档
+  if (!future && statusPending) {
+    return { nextCheckAt: now + dayMs, message: `「${tm.statusCn || tm.status}」，暂未公布上映/开播日，每日复查` };
+  }
+  if (!future) return null; // 无日期且非待定 → 当已可下
+
+  const ts = new Date(`${future}T12:00:00`).getTime();
+  if (Number.isNaN(ts)) return null;
+  // 日期已过：状态仍待定说明可能改档，继续等；否则视为已可下
+  if (ts <= now) {
+    if (statusPending) {
+      return { nextCheckAt: now + dayMs, message: `状态仍为「${tm.statusCn || tm.status}」，继续等待确认上映/开播` };
+    }
+    return null;
+  }
+  // 未来日期：临近时加密轮询
+  const untilStart = ts - now;
+  let nextAt;
+  if (untilStart > 2 * dayMs) nextAt = now + dayMs;
+  else if (untilStart > 0) nextAt = now + Math.max(3600 * 1000, Math.floor(untilStart / 2));
+  else nextAt = now + 6 * 3600 * 1000;
+  const label = tm.mediaType === 'movie' ? '上映' : '开播';
+  const d = new Date(ts);
+  const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return { nextCheckAt: nextAt, message: `待${label}：预计 ${dateStr}（${tm.statusCn || tm.status}），到点自动开始下载` };
+}
+
+/** 在分支开头统一做「待上映/待开播」判定；命中则写入等待态并直接返回 */
+async function maybeWait(sub) {
+  if (!sub.tmdbId || !tmdbReady()) return null;
+  let tm = null;
+  try {
+    tm = await ensureTmdbMeta(sub, { force: true });
+  } catch {
+    return null; // 元数据拿不到不阻断，交给正常分支
+  }
+  const up = tm && awaitingRelease(tm);
+  if (!up) return null;
+  const wait = {
+    tmdbMeta: tm,
+    lastCheckAt: Date.now(),
+    nextCheckAt: up.nextCheckAt,
+    lastResult: up.message,
+    state: 'waiting',
+    failCount: 0,
+  };
+  patchSub(sub.id, wait);
+  pushLog(sub, up.message);
+  return { ok: true, message: up.message, downloaded: 0, summary: { waiting: true } };
 }
 
 /** 服务器本地时区当天 0 点（NAS 是 Asia/Shanghai，跨时区部署也按本机时间算） */
@@ -247,24 +315,38 @@ export function nextDelay(sub, cfg = {}, nowTs = Date.now(), opts = {}) {
 }
 
 /**
- * 跑一次某个订阅的检查。
+ * 跑一次某个订阅的检查（入口）。
+ * 电影订阅走 runCheckMovie，电视剧走 runCheckTv；两者都受 running 集合保护。
+ * 待上映/待开播的条目在这里统一拦截，不空转轮询资源站。
  * @returns {{ok:boolean, message:string, downloaded:number, summary:object}}
  */
 export async function runCheck(id, { force = false } = {}) {
   const sub = getSub(id);
   if (!sub) throw new Error('订阅不存在');
   if (running.has(sub.id)) throw new Error('这个订阅正在检查中，稍等');
+  running.add(sub.id);
+  try {
+    // 待上映/待开播：未到时间只更新等待状态，不实际搜索资源
+    const waited = await maybeWait(sub);
+    if (waited) return waited;
+    if (sub.type === 'movie') return await runCheckMovie(sub);
+    return await runCheckTv(sub);
+  } finally {
+    running.delete(sub.id);
+  }
+}
 
+/**
+ * 剧集订阅检查：扫本地 → 搜站点 → 算缺集 → 只下缺的那几集。
+ */
+export async function runCheckTv(sub) {
   const cfg = loadSettings().subscribe || {};
   const dir = resolveDir(sub.dir);
   if (!dir) throw new Error(`目标目录不在允许的片库内：${sub.dir}`);
-  // 片库根不能当订阅目录：扫的是「这部剧的文件夹」，不是整库。
-  // 选到根目录会把全库文件当成同一部剧，集数变成几十上百集的无意义并集。
   if (allowedRoots().some((r) => path.resolve(r) === dir)) {
     throw new Error(`保存目录是片库根目录（${dir}），请改成这部剧自己的文件夹`);
   }
 
-  running.add(sub.id);
   const notes = [];
   try {
     await fsp.mkdir(dir, { recursive: true });
@@ -464,8 +546,83 @@ export async function runCheck(id, { force = false } = {}) {
     });
     pushLog(sub, `检查失败：${String(err.message || err).slice(0, 160)}`);
     throw err;
-  } finally {
-    running.delete(sub.id);
+  }
+}
+
+/**
+ * 电影订阅检查：扫本地 → 待上映拦截 → 搜一次 → 下整包 → 下完即停。
+ * 电影没有「集」概念，不按集裁剪、不补历史缺集；到点只下发一次，本地已有视频文件即视为完成。
+ */
+export async function runCheckMovie(sub) {
+  const cfg = loadSettings().subscribe || {};
+  const dir = resolveDir(sub.dir);
+  if (!dir) throw new Error(`目标目录不在允许的片库内：${sub.dir}`);
+  if (allowedRoots().some((r) => path.resolve(r) === dir)) {
+    throw new Error(`保存目录是片库根目录（${dir}），请改成这部电影自己的文件夹`);
+  }
+  const notes = [];
+  try {
+    await fsp.mkdir(dir, { recursive: true });
+
+    // 已经下发过：等本地文件出现，出现了即完成，未出现则继续等待（仍在下载中）
+    if (sub.sent?.movie?.state === 'ok') {
+      const have = await scanEpisodes(dir);
+      if (have.files >= 1) {
+        const msg = `已完成：本地已有 ${have.files} 个视频文件`;
+        patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + 30 * 86400000, lastResult: msg, state: 'done', failCount: 0 });
+        pushLog(sub, msg);
+        return { ok: true, message: msg, downloaded: 0, summary: { files: have.files } };
+      }
+      const msg = '下载进行中，等待文件落盘';
+      patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + 3600 * 1000, lastResult: msg });
+      return { ok: true, message: msg, downloaded: 0, summary: { pending: true } };
+    }
+
+    const built = await buildEpisodeIndex(sub, { pages: 2 });
+    notes.push(...built.notes);
+    const src = await findMovieSource(sub, built, { notes });
+    if (!src) {
+      const msg = `还没找到「${sub.title}」的下载资源（可能尚未上线，或资源站没收录）`;
+      const fails = (sub.failCount || 0) + 1;
+      patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + nextDelay(sub, cfg) * 60000, lastResult: msg, failCount: fails });
+      pushLog(sub, msg);
+      return { ok: false, message: msg, downloaded: 0, summary: {} };
+    }
+
+    let magnet = src.magnet || '';
+    let hash = src.hash || '';
+    if (!magnet && src.torrentUrl) {
+      try {
+        const m = await magnetFromTorrentUrl(src.torrentUrl);
+        magnet = m.magnet;
+        hash = m.hash;
+      } catch (err) {
+        const msg = `种子文件没取到：${String(err.message || err).slice(0, 60)}`;
+        patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + 30 * 60000, lastResult: msg, failCount: (sub.failCount || 0) + 1 });
+        pushLog(sub, msg);
+        return { ok: false, message: msg, downloaded: 0, summary: {} };
+      }
+    }
+    if (!magnet) {
+      const msg = '找到资源但拿不到磁力/种子链接，站点可能需要登录';
+      patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + 30 * 60000, lastResult: msg, failCount: (sub.failCount || 0) + 1 });
+      pushLog(sub, msg);
+      return { ok: false, message: msg, downloaded: 0, summary: {} };
+    }
+
+    const route = routeFor('torrent');
+    const r = await route.engine.add({ magnet, dir, hash });
+    const sent = { ...(sub.sent || {}), movie: { at: Date.now(), name: src.name, hash: r.hash || hash, state: 'ok', tries: 1, note: r.already ? '已存在同种子任务' : '' } };
+    const msg = r.already ? '已存在同种子任务，跳过' : `已下发下载：${String(src.name || '').slice(0, 60)}`;
+    patchSub(sub.id, { sent, lastCheckAt: Date.now(), nextCheckAt: Date.now() + 6 * 3600 * 1000, lastResult: msg, state: 'downloading', failCount: 0 });
+    pushLog(sub, msg);
+    return { ok: true, message: msg, downloaded: 1, summary: {} };
+  } catch (err) {
+    const fails = (getSub(sub.id)?.failCount || 0) + 1;
+    const wait = backoffMinutes(cfg.intervalMinutes || 60, fails);
+    patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + wait * 60000, lastResult: `检查失败：${String(err.message || err).slice(0, 160)}`, failCount: fails });
+    pushLog(sub, `检查失败：${String(err.message || err).slice(0, 160)}`);
+    throw err;
   }
 }
 

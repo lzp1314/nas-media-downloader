@@ -24,6 +24,7 @@ const state = {
   link: null,
   sheetItem: null,
   tmdbTitle: '', // 选中的 TMDB 条目对应的剧名，用来发现「用户改了剧名但没重选条目」
+  tmdbType: 'tv', // 选中的 TMDB 条目类型：'tv' 剧集 / 'movie' 电影
   tmdbConfigured: false,
 };
 
@@ -2242,17 +2243,18 @@ async function searchTmdb(q) {
   const tip = $('tmdbTip');
   const list = $('tmdbList');
   try {
-    const r = await api(`/api/tmdb/search?q=${encodeURIComponent(q)}`);
+    // 默认搜全类型：电影 + 剧集一起返回，列表上用徽章区分，选中后分别走电影/剧集逻辑
+    const r = await api(`/api/tmdb/search?q=${encodeURIComponent(q)}&type=all`);
     const items = r.items || [];
     if (!items.length) {
       tip.textContent = `TMDB 上没有「${q}」。国产剧、短剧收录不全，可以试试原名，或者改用「豆瓣查」。`;
       return;
     }
-    tip.textContent = `找到 ${items.length} 条，选一个（会带出总集数、别名和下一集播出日）：`;
+    tip.textContent = `找到 ${items.length} 条，选一个（会带出集数/上映日/状态）：`;
     list.innerHTML = items
       .map(
-        (x) => `<button class="tmdb-item" data-id="${x.id}">
-  <span class="t"><b>${esc(x.name)}</b>${x.year ? `<i>${esc(x.year)}</i>` : ''}</span>
+        (x) => `<button class="tmdb-item" data-id="${x.id}" data-type="${x.mediaType || 'tv'}">
+  <span class="t"><b>${esc(x.name)}</b>${x.year ? `<i>${esc(x.year)}</i>` : ''}<em class="mtag ${x.mediaType === 'movie' ? 'm' : 't'}">${x.mediaType === 'movie' ? '电影' : '剧集'}</em></span>
   <span class="s">${esc(x.originalName || '')}${x.country ? ` · ${esc(x.country)}` : ''}</span>
   ${x.overview ? `<span class="o">${esc(x.overview)}</span>` : ''}
 </button>`,
@@ -2280,11 +2282,22 @@ async function searchTmdb(q) {
 }
 
 function applyTmdb(d) {
+  state.tmdbType = d.mediaType === 'movie' ? 'movie' : 'tv';
   $('subTmdbId').value = String(d.id || '');
   state.tmdbTitle = d.name || '';
   if (d.name) $('subTitle').value = d.name;
   // 站上的资源名常常是原名（英文/日文），拿它当搜索词命中率更高
   if (d.originalName && d.originalName !== d.name) $('subKeyword').value = d.originalName;
+
+  // 电影订阅：没有集数/播出日历概念，清掉剧集专属字段，只留「到点下整部」
+  if (state.tmdbType === 'movie') {
+    $('subTotal').value = '';
+    setSubDays([]);
+    const when = d.releaseDate ? `（预计 ${d.releaseDate} ${d.statusCn || ''}）` : (d.statusCn ? `（${d.statusCn}）` : '');
+    $('subFormTip').textContent = `TMDB 电影${when}：无需填集数/更新日，到点自动下载整部`;
+    return;
+  }
+
   if (d.totalEpisodes > 0) $('subTotal').value = d.totalEpisodes;
 
   const bits = [];
@@ -2318,11 +2331,12 @@ $('tmdbList').addEventListener('click', async (e) => {
   const btn = e.target.closest('.tmdb-item');
   if (!btn) return;
   const id = Number(btn.dataset.id);
+  const type = btn.dataset.type === 'movie' ? 'movie' : 'tv';
   if (!id) return;
   const tip = $('tmdbTip');
   tip.textContent = '正在取详情…';
   try {
-    const d = await api('/api/tmdb/lookup', { method: 'POST', body: JSON.stringify({ id }) });
+    const d = await api('/api/tmdb/lookup', { method: 'POST', body: JSON.stringify({ id, type }) });
     applyTmdb(d);
     $('tmdbModal').hidden = true;
   } catch (err) {
@@ -2382,7 +2396,17 @@ $('subSave').addEventListener('click', async () => {
     startEpisode: Math.max(1, Number($('subFrom').value) || 1),
     endEpisode: Number($('subTo').value) || 0,
     quality: Number($('subQuality').value) || 1080,
+    type: state.tmdbType || 'tv',
   };
+  if (body.type === 'movie') {
+    // 电影没有集数/更新日概念，清掉避免干扰调度
+    body.totalEpisodes = 0;
+    body.startEpisode = 1;
+    body.endEpisode = 0;
+    body.updateDays = [];
+    body.updateDay = 0;
+    body.updateTime = '';
+  }
   if (!body.title) return toast('先填剧名', true);
   if (!body.dir) return toast('先点「选择」挑这部剧的保存目录', true);
   if (isLibRoot(body.dir)) return toast('保存目录不能是片库根目录，请选到这部剧自己的文件夹', true);

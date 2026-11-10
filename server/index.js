@@ -76,7 +76,7 @@ import { listSubs, addSub, updateSub, removeSub, getSub, patchSub } from './subs
 import { runCheck, startScheduler, subStats } from './subscribe/runner.js';
 import { scanEpisodes, missingEpisodes } from './subscribe/episodes.js';
 import { suggest as doubanSuggest, subject as doubanSubject, watching as doubanWatching, doubanReady } from './sources/douban.js';
-import { searchTv as tmdbSearch, tvDetail as tmdbDetail, seasonEpisodes as tmdbSeason, testConnection as tmdbTest, tmdbReady } from './sources/tmdb.js';
+import { searchMedia as tmdbSearch, tvDetail as tmdbDetail, movieDetail as tmdbMovie, seasonEpisodes as tmdbSeason, testConnection as tmdbTest, tmdbReady } from './sources/tmdb.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
@@ -1018,19 +1018,21 @@ on('GET', '/api/douban/watching', async (req, res) => {
 /* TMDB：同样只做元数据。比豆瓣多一个关键能力——「下一集哪天播」 */
 on('GET', '/api/tmdb/search', async (req, res, params, url) => {
   const q = String(url.searchParams.get('q') || '').trim();
+  const type = String(url.searchParams.get('type') || 'all').trim();
   if (!q) return sendJson(res, 200, { items: [] });
   try {
-    sendJson(res, 200, { items: await tmdbSearch(q) });
+    sendJson(res, 200, { items: await tmdbSearch(q, type) });
   } catch (err) {
     sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '', needKey: err.code === 'ENEEDAUTH', items: [] });
   }
 });
 
 on('POST', '/api/tmdb/lookup', async (req, res) => {
-  const { id } = await readBody(req);
+  const { id, type } = await readBody(req);
   if (!Number(id)) return sendJson(res, 400, { error: '缺少 TMDB 条目 id' });
   try {
-    sendJson(res, 200, await tmdbDetail(id));
+    const data = String(type) === 'movie' ? await tmdbMovie(id) : await tmdbDetail(id);
+    sendJson(res, 200, data);
   } catch (err) {
     sendJson(res, 409, { error: cleanMsg(err.message), code: err.code || '', needKey: err.code === 'ENEEDAUTH' });
   }

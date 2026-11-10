@@ -169,6 +169,8 @@ class Aria2Engine {
         seeders: Number(st.numSeeders) || 0,
         status: mapStatus(st),
         error: st.errorMessage || '',
+        // aria2 默认不返回完成时间戳，这里置 0 以保持其原生顺序（qB 任务按完成时间排在其前）
+        doneAt: 0,
       };
     });
     return {

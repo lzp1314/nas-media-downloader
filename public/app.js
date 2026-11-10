@@ -1283,7 +1283,11 @@ async function loadTasks() {
     $('taskStat').innerHTML = `总速度 <b style="color:var(--text)">${fmtSpeed(data.globalSpeed)}</b>${split}　活动 ${data.active} / 等待 ${data.waiting}${badTip}`;
     $('taskEmpty').hidden = list.length > 0;
     const running = list.filter((t) => !DONE_STATUSES.has(t.status)).map((t) => taskCard(t));
-    const finished = list.filter((t) => DONE_STATUSES.has(t.status)).map((t) => taskCard(t));
+    // 已完成：按完成时间倒序，最新下完的排最上面（qB 原生顺序是添加时间早的在前）
+    const finishedList = list
+      .filter((t) => DONE_STATUSES.has(t.status))
+      .sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+    const finished = finishedList.map((t) => taskCard(t));
     $('tasks').innerHTML =
       taskGroup('进行中', 'live', running) + taskGroup('已完成', 'done', finished, true);
 
@@ -2025,7 +2029,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.28';
+let currentVersion = '1.2.29';
 
 function setVersion(v) {
   if (!v) return;
@@ -2226,6 +2230,7 @@ function openSubModal(sub) {
   $('subFrom').value = sub?.startEpisode && sub.startEpisode > 1 ? sub.startEpisode : '';
   $('subTo').value = sub?.endEpisode || '';
   $('subQuality').value = String(sub?.quality || 1080);
+  $('strictQuality').checked = Boolean(sub?.strictQuality);
   setSubDays(Array.isArray(sub?.updateDays) && sub.updateDays.length ? sub.updateDays : sub?.updateDay ? [sub.updateDay] : []);
   $('subTime').value = sub?.updateTime || '';
   $('subPerNight').value = String(sub?.episodesPerNight || 1);
@@ -2432,6 +2437,7 @@ $('subSave').addEventListener('click', async () => {
     startEpisode: Math.max(1, Number($('subFrom').value) || 1),
     endEpisode: Number($('subTo').value) || 0,
     quality: Number($('subQuality').value) || 1080,
+    strictQuality: $('strictQuality').checked,
     type: state.tmdbType || 'tv',
   };
   if (body.type === 'movie') {

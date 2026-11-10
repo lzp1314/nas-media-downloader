@@ -133,6 +133,8 @@ export function mapTorrent(t) {
     seeders: seeds,
     status,
     error: t.state === 'error' ? '下载出错' : t.state === 'missingFiles' ? '文件缺失（可能被移动或删除）' : '',
+    // 完成时间（毫秒）：已完成用完成时间，未完成用添加时间兜底，供前端「已完成」按时间倒序
+    doneAt: (t.completion_on && t.completion_on > 0 ? t.completion_on : (t.added_on || 0)) * 1000,
   };
 }
 

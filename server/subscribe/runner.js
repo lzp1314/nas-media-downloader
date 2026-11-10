@@ -446,7 +446,8 @@ export async function runCheckTv(sub) {
         notes.push(`第 ${ep} 集找源失败：${String(err.message || err).slice(0, 80)}`);
       }
       if (!src) {
-        notes.push(`第 ${ep} 集：站点上没有能明确对应到这一集的资源`);
+        // 严格清晰度且没达标：findSourceForEpisode 已记过「等待更高清晰度」，这里不重复
+        if (!sub.strictQuality) notes.push(`第 ${ep} 集：站点上没有能明确对应到这一集的资源`);
         continue;
       }
 
@@ -582,7 +583,11 @@ export async function runCheckMovie(sub) {
     notes.push(...built.notes);
     const src = await findMovieSource(sub, built, { notes });
     if (!src) {
-      const msg = `还没找到「${sub.title}」的下载资源（可能尚未上线，或资源站没收录）`;
+      const strict = Boolean(sub.strictQuality);
+      const preferred = Number(sub.quality) || 1080;
+      const msg = strict
+        ? `未找到 ≥${preferred}p 的资源，已按「严格清晰度」设置等待更高清晰度上线`
+        : `还没找到「${sub.title}」的下载资源（可能尚未上线，或资源站没收录）`;
       const fails = (sub.failCount || 0) + 1;
       patchSub(sub.id, { lastCheckAt: Date.now(), nextCheckAt: Date.now() + nextDelay(sub, cfg) * 60000, lastResult: msg, failCount: fails });
       pushLog(sub, msg);

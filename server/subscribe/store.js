@@ -160,6 +160,8 @@ export function normalize(raw) {
     startEpisode: Math.max(1, num(raw.startEpisode, 1)),
     endEpisode: Math.max(0, num(raw.endEpisode)),
     quality: [2160, 1080, 720, 480].includes(Number(raw.quality)) ? Number(raw.quality) : 1080,
+    // 严格清晰度：勾选后只下「≥ 偏好清晰度」的资源，没有就等待、不降档；默认 false = 可回退
+    strictQuality: Boolean(raw.strictQuality),
     // 更新日：1~7=周一~周日，可多选。空数组=不指定（匀速轮询）
     updateDays,
     // 旧字段留着，值取第一天，方便只看单值的旧代码和测试继续跑
@@ -203,7 +205,7 @@ export function addSub(input) {
 }
 
 /** 只允许改这几项，其余（sent/log/统计）由程序维护，避免前端误写 */
-const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'type', 'dir', 'startEpisode', 'endEpisode', 'quality', 'updateDays', 'updateDay', 'updateTime', 'episodesPerNight', 'enabled'];
+const EDITABLE = ['title', 'keyword', 'aliases', 'doubanId', 'tmdbId', 'totalEpisodes', 'type', 'dir', 'startEpisode', 'endEpisode', 'quality', 'strictQuality', 'updateDays', 'updateDay', 'updateTime', 'episodesPerNight', 'enabled'];
 
 export function updateSub(id, patch) {
   const db = loadSubs();

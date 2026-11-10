@@ -235,6 +235,9 @@ async function fromPacks(packs, episode, notes, preferred) {
  */
 export async function findSourceForEpisode(sub, index, episode, { notes = [], packs = [] } = {}) {
   const preferred = Number(sub.quality) || 1080;
+  // 严格模式：只接受「≥ 偏好清晰度」的资源；未达标一律不当候选（宁缺毋滥）
+  const strict = Boolean(sub.strictQuality);
+  const meets = (q) => !strict || (Number(q) || 0) >= preferred;
 
   const use = (hit, source) => (hit.magnet
     ? { magnet: hit.magnet, name: hit.name, hash: hit.hash || hashOf(hit.magnet), quality: hit.quality, source }
@@ -242,10 +245,10 @@ export async function findSourceForEpisode(sub, index, episode, { notes = [], pa
 
   const cands = [...(index.get(episode) || [])].sort((a, b) => byQuality(a, b, preferred));
 
-  // 1) 索引里正好符合偏好
+  // 1) 索引里正好符合偏好（严格模式下允许更高清晰度，但排除更低清晰度）
   for (const cand of cands) {
     if (!cand.magnet && (!cand.id || !cand.source)) continue;
-    if (cand.quality !== preferred) continue;
+    if (!meets(cand.quality)) continue;
     if (cand.magnet) {
       return { magnet: cand.magnet, name: cand.title, hash: hashOf(cand.magnet), quality: cand.quality, source: cand.source };
     }
@@ -262,22 +265,28 @@ export async function findSourceForEpisode(sub, index, episode, { notes = [], pa
   if (packs.length) {
     const found = await fromPacks(packs, episode, notes, preferred);
     await sleep(300 + Math.round(Math.random() * 500));
-    if (found && (found.hit.magnet || found.hit.torrentUrl)) return use(found.hit, found.source);
+    if (found && (found.hit.magnet || found.hit.torrentUrl) && meets(found.hit.quality)) {
+      return use(found.hit, found.source);
+    }
   }
 
-  // 3) 兜底：索引里其它清晰度的候选
-  for (const cand of cands) {
-    if (!cand.magnet && (!cand.id || !cand.source)) continue;
-    if (cand.magnet) {
-      return { magnet: cand.magnet, name: cand.title, hash: hashOf(cand.magnet), quality: cand.quality, source: cand.source };
+  // 3) 兜底：索引里其它清晰度的候选（严格模式下跳过——宁缺毋滥，等更高清晰度）
+  if (!strict) {
+    for (const cand of cands) {
+      if (!cand.magnet && (!cand.id || !cand.source)) continue;
+      if (cand.magnet) {
+        return { magnet: cand.magnet, name: cand.title, hash: hashOf(cand.magnet), quality: cand.quality, source: cand.source };
+      }
+      try {
+        const hit = await magnetFromDetail(cand, episode, notes, preferred);
+        await sleep(300 + Math.round(Math.random() * 500));
+        if (hit && (hit.magnet || hit.torrentUrl)) return use(hit, cand.source);
+      } catch (err) {
+        notes.push(`取「${String(cand.title).slice(0, 24)}」的种子失败：${String(err.message || err).slice(0, 60)}`);
+      }
     }
-    try {
-      const hit = await magnetFromDetail(cand, episode, notes, preferred);
-      await sleep(300 + Math.round(Math.random() * 500));
-      if (hit && (hit.magnet || hit.torrentUrl)) return use(hit, cand.source);
-    } catch (err) {
-      notes.push(`取「${String(cand.title).slice(0, 24)}」的种子失败：${String(err.message || err).slice(0, 60)}`);
-    }
+  } else {
+    notes.push(`第 ${episode} 集：未找到 ≥${preferred}p 的资源，已按「严格清晰度」设置跳过，等待更高清晰度`);
   }
   return null;
 }
@@ -312,6 +321,9 @@ export function subscribeSettings() {
  */
 export async function findMovieSource(sub, built, { notes = [] } = {}) {
   const preferred = Number(sub.quality) || 1080;
+  // 严格模式：只接受「≥ 偏好清晰度」的资源；未达标一律不下，等待更高清晰度
+  const strict = Boolean(sub.strictQuality);
+  const meets = (q) => !strict || (Number(q) || 0) >= preferred;
   const all = [];
   for (const arr of built.index.values()) all.push(...arr);
   all.push(...(built.packs || []));
@@ -321,7 +333,10 @@ export async function findMovieSource(sub, built, { notes = [] } = {}) {
   const withMag = all.filter((c) => c.magnet).sort((a, b) => byQuality(a, b, preferred));
   if (withMag.length) {
     const c = withMag[0];
-    return { magnet: c.magnet, name: c.title, hash: hashOf(c.magnet), quality: c.quality, source: c.source };
+    // 严格模式下未达标别急着下，继续看详情页有没有更高清晰度；都不行再返回 null
+    if (meets(c.quality)) {
+      return { magnet: c.magnet, name: c.title, hash: hashOf(c.magnet), quality: c.quality, source: c.source };
+    }
   }
 
   // 2) 展开带 id 的条目详情页，取第一个磁力/种子（电影整部即可，不按集过滤）
@@ -348,14 +363,19 @@ export async function findMovieSource(sub, built, { notes = [] } = {}) {
       if (hits.length) {
         hits.sort((a, b) => Number(a.needVip) - Number(b.needVip) || byQuality(a, b, preferred));
         const h = hits[0];
-        await sleep(300 + Math.round(Math.random() * 400));
-        return h.magnet
-          ? { magnet: h.magnet, name: h.name, hash: h.hash || hashOf(h.magnet), quality: h.quality, source: cand.source }
-          : { torrentUrl: h.torrentUrl, name: h.name, quality: h.quality, source: cand.source };
+        if (meets(h.quality)) {
+          await sleep(300 + Math.round(Math.random() * 400));
+          return h.magnet
+            ? { magnet: h.magnet, name: h.name, hash: h.hash || hashOf(h.magnet), quality: h.quality, source: cand.source }
+            : { torrentUrl: h.torrentUrl, name: h.name, quality: h.quality, source: cand.source };
+        }
       }
     } catch (err) {
       notes.push(`取「${String(cand.title).slice(0, 24)}」的详情失败：${String(err.message || err).slice(0, 50)}`);
     }
   }
+
+  // 严格模式：扫遍所有候选都没达标的清晰度，宁缺毋滥——不下，等更高清晰度上线
+  if (strict) notes.push(`未找到 ≥${preferred}p 的资源，已按「严格清晰度」设置等待更高清晰度（当前站点最高为更低清晰度）`);
   return null;
 }

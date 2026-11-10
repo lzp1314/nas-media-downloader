@@ -5,7 +5,7 @@ import { parseTorrentMeta } from '../lib/bencode.js';
 import { allowedRoots, loadSettings } from '../settings.js';
 import { listSubs, getSub, patchSub, pushLog } from './store.js';
 import { scanEpisodes, missingEpisodes, parseEpisodes, pickFileIndexes } from './episodes.js';
-import { buildEpisodeIndex, findSourceForEpisode, targetUpperBound } from './matcher.js';
+import { buildEpisodeIndex, findSourceForEpisode, findMovieSource, targetUpperBound } from './matcher.js';
 import { listTorrentFiles, readCachedTorrent } from '../sources/torrent.js';
 import { routeFor } from '../engine/index.js';
 import { tmdbReady, tvDetail, movieDetail } from '../sources/tmdb.js';

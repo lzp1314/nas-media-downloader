@@ -2025,7 +2025,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.27';
+let currentVersion = '1.2.28';
 
 function setVersion(v) {
   if (!v) return;

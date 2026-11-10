@@ -1289,7 +1289,13 @@ async function loadTasks() {
 
     $('tasks')
       .querySelectorAll('[data-act]')
-      .forEach((btn) => btn.addEventListener('click', () => taskAction(btn.dataset.act, btn.dataset.id, btn.dataset.eng)));
+      .forEach((btn) =>
+        btn.addEventListener('click', () => {
+          const card = btn.closest('.task');
+          const name = card ? (card.querySelector('.nm')?.textContent || '') : '';
+          taskAction(btn.dataset.act, btn.dataset.id, btn.dataset.eng, name);
+        }),
+      );
     $('tasks')
       .querySelectorAll('[data-toggle-done]')
       .forEach((btn) =>
@@ -1303,17 +1309,22 @@ async function loadTasks() {
   }
 }
 
-async function taskAction(act, id, eng) {
+let pendingDel = null;
+
+async function taskAction(act, id, eng, name) {
   const q = eng ? `engine=${encodeURIComponent(eng)}` : '';
   try {
     if (act === 'del') {
-      const withFiles = confirm('删除任务。是否同时删除已下载的文件？\n\n确定＝同时删文件，取消＝只删任务');
-      const qs = [q, `files=${withFiles ? 1 : 0}`].filter(Boolean).join('&');
-      await api(`/api/tasks/${encodeURIComponent(id)}?${qs}`, { method: 'DELETE' });
-      toast(withFiles ? '任务与文件已删除' : '任务已删除');
-    } else {
-      await api(`/api/tasks/${encodeURIComponent(id)}/${act}${q ? `?${q}` : ''}`, { method: 'POST' });
+      // 不再用原生 confirm：开一个正经弹窗，X / 取消 / 点背景 / ESC 都只关弹窗不删
+      pendingDel = { id, eng, q };
+      $('delWithFiles').checked = false;
+      $('delTip').textContent = name
+        ? `将删除：${name}`
+        : '确定要删除这个任务吗？删除后下载记录与进度都会消失。';
+      $('delModal').hidden = false;
+      return;
     }
+    await api(`/api/tasks/${encodeURIComponent(id)}/${act}${q ? `?${q}` : ''}`, { method: 'POST' });
     await loadTasks();
   } catch (err) {
     toast(err.message, true);
@@ -1321,6 +1332,31 @@ async function taskAction(act, id, eng) {
 }
 
 $('btnRefreshTasks').addEventListener('click', loadTasks);
+
+// 删除确认弹窗：X / 取消 / 点背景 / ESC 都只关弹窗、不删任务；只有「确定删除」才真正删
+function closeDelModal() {
+  pendingDel = null;
+  $('delModal').hidden = true;
+}
+$('delClose').addEventListener('click', closeDelModal);
+$('delCancel').addEventListener('click', closeDelModal);
+$('delModal').addEventListener('click', (e) => { if (e.target === $('delModal')) closeDelModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('delModal').hidden) { e.preventDefault(); closeDelModal(); }
+});
+$('delConfirm').addEventListener('click', async () => {
+  if (!pendingDel) return;
+  const { id, eng, q } = pendingDel;
+  const files = $('delWithFiles').checked ? 1 : 0;
+  closeDelModal();
+  try {
+    await api(`/api/tasks/${encodeURIComponent(id)}?${[q, `files=${files}`].filter(Boolean).join('&')}`, { method: 'DELETE' });
+    toast(files ? '任务与文件已删除' : '任务已删除');
+  } catch (err) {
+    toast(err.message, true);
+  }
+  await loadTasks();
+});
 
 /* ---------------- 磁力搜索源管理 ---------------- */
 let magnetSources = [];
@@ -1989,7 +2025,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.16';
+let currentVersion = '1.2.27';
 
 function setVersion(v) {
   if (!v) return;

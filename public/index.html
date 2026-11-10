@@ -23,7 +23,7 @@
     </span>
     <span class="name">NAS<span>影视下载器</span></span>
   </a>
-  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.26</button>
+  <button class="ver" id="verBadge" title="查看版本与检测更新">v1.2.27</button>
 
   <div class="search" id="searchWrap">
     <svg class="sicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
@@ -190,7 +190,7 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.26</span></div>
+            <div class="card-head"><h3>版本与更新</h3><span class="pill" id="verPill">v1.2.27</span></div>
             <p class="desc">镜像由仓库自动构建。检测到新版本后，在 NAS 的 compose 目录执行一条命令即可更新，配置与任务都会保留。</p>
             <div class="status" id="verStatus"></div>
             <div class="field"><label></label><button class="btn sm" id="btnCheckUpdate2">检测更新</button></div>
@@ -523,7 +523,7 @@
 <div class="modal" id="verModal" hidden>
   <div class="dialog ver-dialog">
     <h3>版本与更新</h3>
-    <div class="ver-now">当前版本 <b id="verNow">v1.2.26</b></div>
+    <div class="ver-now">当前版本 <b id="verNow">v1.2.27</b></div>
     <div class="status" id="verPopStatus">点「检测更新」查看仓库里有没有新版本。</div>
     <div class="ver-cmd" id="verCmd" hidden>
       <small>在 NAS 的 compose 目录执行：</small>
@@ -533,6 +533,25 @@
       <a class="btn ghost" id="verRepo" href="#" target="_blank" rel="noopener">查看仓库</a>
       <button class="btn ghost" id="verClose">关闭</button>
       <button class="btn primary" id="btnCheckUpdate">检测更新</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除任务确认 -->
+<div class="modal" id="delModal" hidden>
+  <div class="dialog">
+    <div class="dialog-head">
+      <h3>删除任务</h3>
+      <button class="icon" id="delClose" title="关闭">×</button>
+    </div>
+    <p class="tip" id="delTip"></p>
+    <label class="del-files">
+      <input type="checkbox" id="delWithFiles" />
+      <span>同时删除已下载的本地文件</span>
+    </label>
+    <div class="dialog-foot">
+      <button class="btn ghost" id="delCancel">取消</button>
+      <button class="btn danger" id="delConfirm">确定删除</button>
     </div>
   </div>
 </div>

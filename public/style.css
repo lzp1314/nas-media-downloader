@@ -678,6 +678,13 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 15px; white-space: nowrap; }
 .chk input, .sw input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
 .sw { display: inline-flex; align-items: center; cursor: pointer; }
+
+/* 删除确认弹窗：前面一个点的圆点勾选框 */
+.del-files { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; color: var(--text); font-size: 15px; cursor: pointer; user-select: none; }
+.del-files input { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; margin: 0; flex: 0 0 auto; border: 2px solid var(--dim); border-radius: 50%; cursor: pointer; position: relative; transition: border-color .15s ease; }
+.del-files input:hover { border-color: var(--accent); }
+.del-files input:checked { border-color: var(--accent); }
+.del-files input:checked::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent); }
 #magnetList .row-line { flex-wrap: wrap; }
 #magnetList .row-line .p { flex: 1 1 200px; white-space: normal; }
 #magnetList .row-line .p small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -58,8 +58,9 @@ function installHostOverrides() {
 installHostOverrides();
 
 import { loadSettings, saveSettings, publicSettings, allowedRoots, DOWNLOAD_ROOT, CONFIG_DIR } from './settings.js';
-import { findRoot, resolveInside, humanSize, httpRequest, DEFAULT_UA } from './lib/util.js';
+import { findRoot, resolveInside, humanSize, httpRequest } from './lib/util.js';
 import { parseTorrentMeta } from './lib/bencode.js';
+import { fetchTorrentBytes } from './lib/seed.js';
 import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
 import { backfillPosters, rememberPoster } from './lib/poster-cache.js';
 import { sourceA } from './sources/a.js';
@@ -526,22 +527,8 @@ async function loadSeed(rawUrl) {
     await saveTorrentFile(hit.meta.hash, hit.buf); // 磁盘缓存可能被清过，命中时补一次
     return hit.meta;
   }
-  let buf = Buffer.alloc(0);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await httpRequest(url.toString(), {
-      binary: true,
-      headers: { Referer: `${url.origin}/`, 'User-Agent': DEFAULT_UA },
-      jar: sourceA.jar,
-      timeout: 20000,
-    });
-    buf = res.buffer || Buffer.alloc(0);
-    if (res.status === 200 && buf.length >= 20 && buf[0] === 0x64) break;
-    // 站点前置 JS Cookie 校验页：按页面脚本写入 Cookie 再取一次，服务端冷启动也能拿到种子
-    const m = buf.subarray(0, 4096).toString('utf8')
-      .match(/document\.cookie\s*=\s*"([^=]+)=([^;]+);/);
-    if (!m || attempt === 1) break;
-    sourceA.jar.set(url.toString(), m[1].trim(), m[2].trim());
-  }
+  // 与订阅自动下载共用同一取种实现：带登录态、自动处理 JS Cookie 校验页
+  const buf = await fetchTorrentBytes(url.toString(), { jar: sourceA.jar, timeout: 20000 });
   if (buf.length < 20 || buf[0] !== 0x64) {
     throw new Error('种子文件没取到（站点可能需要登录或会员）');
   }

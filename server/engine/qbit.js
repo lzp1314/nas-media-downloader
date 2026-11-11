@@ -107,11 +107,14 @@ function networkMessage(err) {
 export function mapTorrent(t) {
   let status;
   if (t.state === 'error' || t.state === 'missingFiles') status = 'error';
-  // 5.x 把 pausedXX 改名成 stoppedXX，两种都认
+  // 先判满进度：qB 把「下完且做种被暂停」记为 pausedUP，进度是满的；
+  // 若先判 paused 会把已下完的任务误归为「已暂停」，所以满进度优先算 done。
+  // 用 0.999 容差覆盖浮点误差（个别版本 progress 满格为 0.99997 而非 1）。
+  else if ((t.progress || 0) >= 0.999) status = 'done';
+  // 5.x 把 pausedXX 改名成 stoppedXX，两种都认（此分支只兜底「未满进度却暂停」的下载中任务）
   else if (['pausedDL', 'pausedUP', 'stoppedDL', 'stoppedUP'].includes(t.state)) status = 'paused';
   else if (t.state === 'queuedDL' || t.state === 'queuedUP') status = 'queued';
   else if (t.state === 'uploading' || t.state === 'stalledUP') status = 'done';
-  else if (t.progress >= 1) status = 'done';
   else status = 'downloading';
 
   const leechers = t.num_leechs || 0;

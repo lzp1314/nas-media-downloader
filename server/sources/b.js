@@ -11,6 +11,8 @@ import { requireB } from './config.js';
  */
 
 const jar = new CookieJar();
+// 供订阅自动下载按源选取登录态（与源A的 sourceA.jar 用法一致）
+export const sourceBJar = jar;
 
 let authToken = '';
 let authAt = 0;

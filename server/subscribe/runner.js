@@ -1,11 +1,13 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { httpRequest, DEFAULT_UA } from '../lib/util.js';
+import { fetchTorrentBytes } from '../lib/seed.js';
 import { parseTorrentMeta } from '../lib/bencode.js';
 import { allowedRoots, loadSettings } from '../settings.js';
 import { listSubs, getSub, patchSub, pushLog } from './store.js';
 import { scanEpisodes, missingEpisodes, parseEpisodes, pickFileIndexes } from './episodes.js';
 import { buildEpisodeIndex, findSourceForEpisode, findMovieSource, targetUpperBound } from './matcher.js';
+import { sourceA } from '../sources/a.js';
+import { sourceBJar } from '../sources/b.js';
 import { listTorrentFiles, readCachedTorrent } from '../sources/torrent.js';
 import { routeFor } from '../engine/index.js';
 import { tmdbReady, tvDetail, movieDetail } from '../sources/tmdb.js';
@@ -53,15 +55,18 @@ function resolveDir(dir) {
   return ok ? abs : '';
 }
 
-/** 站点只给 .torrent 时，取回种子换成磁力（复用 bencode 的 hash + tracker） */
-async function magnetFromTorrentUrl(url) {
-  const res = await httpRequest(url, {
-    binary: true,
-    headers: { Referer: new URL(url).origin + '/', 'User-Agent': DEFAULT_UA },
-    timeout: 25000,
-  });
-  const buf = res.buffer || Buffer.alloc(0);
-  if (res.status !== 200 || buf.length < 20 || buf[0] !== 0x64) {
+/** 按源选取登录 CookieJar：源A→sourceA.jar，源B→sourceBJar，其它→不带 */
+function jarForSource(source) {
+  if (source === 'a') return sourceA.jar;
+  if (source === 'b') return sourceBJar;
+  return undefined;
+}
+
+/** 站点只给 .torrent 时，取回种子换成磁力（复用 bencode 的 hash + tracker）。
+ *  与手动下载共用 fetchTorrentBytes：带登录态、自动处理 JS Cookie 校验页。 */
+async function magnetFromTorrentUrl(url, { source } = {}) {
+  const buf = await fetchTorrentBytes(url, { jar: jarForSource(source), timeout: 25000 });
+  if (buf.length < 20 || buf[0] !== 0x64) {
     throw new Error('种子文件没取到（站点可能需要登录）');
   }
   const meta = parseTorrentMeta(buf);
@@ -455,7 +460,7 @@ export async function runCheckTv(sub) {
       let hash = src.hash || '';
       if (!magnet && src.torrentUrl) {
         try {
-          const m = await magnetFromTorrentUrl(src.torrentUrl);
+          const m = await magnetFromTorrentUrl(src.torrentUrl, { source: src.source });
           magnet = m.magnet;
           hash = m.hash;
         } catch (err) {
@@ -598,7 +603,7 @@ export async function runCheckMovie(sub) {
     let hash = src.hash || '';
     if (!magnet && src.torrentUrl) {
       try {
-        const m = await magnetFromTorrentUrl(src.torrentUrl);
+        const m = await magnetFromTorrentUrl(src.torrentUrl, { source: src.source });
         magnet = m.magnet;
         hash = m.hash;
       } catch (err) {

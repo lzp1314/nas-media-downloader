@@ -1537,6 +1537,28 @@ async function loadSettingsView() {
     const s = data.settings;
     state.meta = s;
 
+    // 访问账号：只回显账号名与模式，密码/哈希一律不回显
+    const au = s.auth || { mode: 'none', enabled: false };
+    const authPillEl = $('authPill');
+    authPillEl.textContent = au.mode === 'panel' ? '面板已设置'
+      : au.mode === 'env' ? 'compose 环境变量'
+        : au.mode === 'off' ? '已关闭' : '免登录';
+    authPillEl.className = `pill ${au.enabled ? 'ok' : ''}`;
+    $('authUser').value = au.username || '';
+    $('authCurrentRow').hidden = !au.enabled;
+    $('btnLogout').hidden = !au.enabled;
+    $('btnClearAuth').hidden = !au.enabled;
+    $('authPass').value = '';
+    $('authConfirm').value = '';
+    $('authCurrent').value = '';
+    $('authStatus').textContent = au.mode === 'panel'
+      ? `当前登录账号：${au.username} · 面板设置优先`
+      : au.mode === 'env'
+        ? '当前用 compose 里的 ACCESS_PASSWORD（只有密码）· 在下面设置账号密码即可接管'
+        : au.mode === 'off'
+          ? '已在面板关闭登录验证，compose 里的旧密码不再生效'
+          : '当前免登录，任何人打开网页都能直接使用';
+
     $('engineSel').value = s.engine || 'auto';
     $('qbitRow').hidden = s.engine === 'aria2';
     $('qbitUrl').value = s.qbit?.url || '';
@@ -2028,8 +2050,50 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
   }),
 );
 
+/* ---------------- 访问账号 ---------------- */
+$('btnSaveAuth').onclick = async () => {
+  const username = $('authUser').value.trim();
+  const password = $('authPass').value;
+  if (!username) return toast('先填登录账号', true);
+  if (!password) return toast('先填新密码', true);
+  try {
+    await api('/api/auth/set', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        confirm: $('authConfirm').value,
+        currentPassword: $('authCurrent').value,
+      }),
+    });
+    toast('访问账号已保存，立即生效');
+    await loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+$('btnClearAuth').onclick = async () => {
+  if (!confirm('关闭后任何人打开网页都能直接操作（包括公网访问）。\n\n请先在「当前密码」里填现在的密码，再点确定。\n\n确定关闭登录验证吗？')) return;
+  try {
+    await api('/api/auth/set', {
+      method: 'POST',
+      body: JSON.stringify({ username: '', password: '', currentPassword: $('authCurrent').value }),
+    });
+    toast('已关闭登录验证');
+    await loadSettingsView();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+$('btnLogout').onclick = async () => {
+  await api('/api/logout', { method: 'POST' }).catch(() => null);
+  location.href = '/login';
+};
+
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.31';
+let currentVersion = '1.2.32';
 
 function setVersion(v) {
   if (!v) return;

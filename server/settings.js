@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveAuth } from './lib/auth.js';
 import { siteStatus } from './sources/config.js';
 
 const CONFIG_DIR = process.env.CONFIG_DIR || '/config';
@@ -144,6 +145,19 @@ function defaults() {
       apiKey: '',
       base: '',
     },
+    /**
+     * 访问账号（面板设置优先于 compose 的 ACCESS_PASSWORD）。
+     * 只落盘随机 salt + scrypt 哈希 + 会话密钥，绝不存明文密码。
+     * disabled=true 表示用户在面板主动关掉登录，此时压过 YAML 的旧密码。
+     */
+    auth: {
+      username: '',
+      salt: '',
+      hash: '',
+      sessionSecret: '',
+      disabled: false,
+      updatedAt: 0,
+    },
     /** 剧集订阅 */
     subscribe: {
       enabled: true,
@@ -259,6 +273,16 @@ function normalize(s) {
     apiKey: String(s.tmdb?.apiKey || '').trim(),
     // 域名只留 scheme://host/路径，去掉结尾斜杠，允许用户填镜像
     base: String(s.tmdb?.base || '').trim().replace(/\/+$/, ''),
+  };
+  // 账号段收敛到固定形状：格式不对的哈希直接丢弃（宁可回落免登录/环境变量，也不认残缺值）
+  const a = s.auth || {};
+  s.auth = {
+    username: String(a.username || '').trim().slice(0, 32),
+    salt: /^[0-9a-f]{32}$/.test(String(a.salt || '')) ? String(a.salt) : '',
+    hash: /^[0-9a-f]{64}$/.test(String(a.hash || '')) ? String(a.hash) : '',
+    sessionSecret: /^[0-9a-f]{64}$/.test(String(a.sessionSecret || '')) ? String(a.sessionSecret) : '',
+    disabled: a.disabled === true,
+    updatedAt: Number(a.updatedAt) || 0,
   };
   return s;
 }
@@ -415,6 +439,17 @@ export function publicSettings() {
       keyTail: tail(s.tmdb?.apiKey),
     },
     subscribe: s.subscribe,
+    // 账号段只回「模式 / 账号名 / 是否要填账号」，哈希、salt、会话密钥一律不下发
+    auth: (() => {
+      const a = resolveAuth(s.auth, process.env.ACCESS_PASSWORD || '');
+      return {
+        mode: a.mode,
+        enabled: a.enabled,
+        needUsername: a.needUsername,
+        username: a.mode === 'panel' ? a.username : '',
+        updatedAt: s.auth?.updatedAt || 0,
+      };
+    })(),
     accessPasswordSet: Boolean(process.env.ACCESS_PASSWORD),
   };
 }

@@ -470,6 +470,9 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
    手机横屏或小屏时高度会超过 88vh，允许滚动才不至于把「保存」挤出可视区 */
 #subModal .dialog { overflow-y: auto; }
 
+/* 访问账号卡片：改动影响与忘记密码的恢复路径用小字，不跟输入框抢宽度 */
+.auth-hint { font-size: 12.5px; line-height: 1.65; color: var(--dim); margin: 12px 0 0; }
+
 /* ---------------- 订阅：剧集 / 电影分型（v1.2.31） ---------------- */
 /* 弹窗顶部的类型切换（剧集 / 电影），复用更新日方块的视觉语言 */
 .subtype { display: flex; gap: 8px; margin: 4px 0 14px; }

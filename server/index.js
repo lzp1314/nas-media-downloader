@@ -61,6 +61,7 @@ import { loadSettings, saveSettings, publicSettings, allowedRoots, DOWNLOAD_ROOT
 import { findRoot, resolveInside, humanSize, httpRequest } from './lib/util.js';
 import { parseTorrentMeta } from './lib/bencode.js';
 import { fetchTorrentBytes } from './lib/seed.js';
+import { resolveAuth, authToken, hashPassword, verifyPassword, makeSalt, makeSecret, validateCredential, createLimiter } from './lib/auth.js';
 import { mergeSearchItems, normalizeResources } from './lib/aggregate.js';
 import { backfillPosters, rememberPoster } from './lib/poster-cache.js';
 import { sourceA } from './sources/a.js';
@@ -84,6 +85,7 @@ const publicDir = path.join(__dirname, '..', 'public');
 const PORT = Number(process.env.PORT || 8080);
 const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || '';
 const AUTH_COOKIE = 'nz_token';
+const AUTH_MAX_AGE = 2592000; // 30 天
 const UPDATE_REPO = process.env.UPDATE_REPO || 'lzp1314/nas-media-downloader';
 const VERSION = (() => {
   try {
@@ -171,8 +173,30 @@ function parseCookies(req) {
   return out;
 }
 
-function authToken() {
-  return crypto.createHash('sha256').update(`${ACCESS_PASSWORD}::nas-downloader`).digest('hex').slice(0, 32);
+/** 当前生效的认证方式：每次请求实时读配置，面板改完立即生效，不用重启容器 */
+function currentAuth() {
+  return resolveAuth(loadSettings().auth, ACCESS_PASSWORD);
+}
+
+const loginLimiter = createLimiter();
+
+/** 限流来源：反代后面取 XFF 首段，直连时用 socket 地址 */
+function clientKey(req) {
+  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return xff || req.socket?.remoteAddress || 'unknown';
+}
+
+/** 只在 HTTPS（直连 TLS 或反代声明 https）下加 Secure；局域网 HTTP 硬加会让 Cookie 不生效 */
+function setAuthCookie(res, req, auth) {
+  const https = Boolean(req.socket?.encrypted)
+    || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  const parts = [`${AUTH_COOKIE}=${authToken(auth)}`, 'Path=/', 'HttpOnly', `Max-Age=${AUTH_MAX_AGE}`, 'SameSite=Lax'];
+  if (https) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax`);
 }
 
 function serveFile(res, filePath) {
@@ -194,10 +218,77 @@ function serveFile(res, filePath) {
 /* 接口                                                                */
 /* ------------------------------------------------------------------ */
 on('POST', '/api/login', async (req, res) => {
+  const auth = currentAuth();
+  if (!auth.enabled) return sendJson(res, 200, { ok: true });
+  const key = clientKey(req);
+  const gate = loginLimiter.check(key);
+  if (gate.blocked) return sendJson(res, 429, { error: `尝试次数过多，请 ${gate.retryAfter} 秒后再试` });
   const body = await readBody(req);
-  if (!ACCESS_PASSWORD) return sendJson(res, 200, { ok: true });
-  if (String(body.password || '') !== ACCESS_PASSWORD) return sendJson(res, 401, { error: '密码错误' });
-  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${authToken()}; Path=/; HttpOnly; Max-Age=2592000; SameSite=Lax`);
+  let ok = false;
+  if (auth.mode === 'panel') {
+    ok = String(body.username || '').trim() === auth.username
+      && await verifyPassword(body.password || '', auth.salt, auth.hash);
+  } else {
+    // 兼容 compose 里的 ACCESS_PASSWORD：只有密码、没有账号
+    ok = String(body.password || '') === auth.password;
+  }
+  if (!ok) {
+    const r = loginLimiter.fail(key);
+    // 触发锁定的这一次就回 429，别让前端把它当成「密码错了再试一次」
+    return sendJson(res, r.locked ? 429 : 401, {
+      error: r.locked ? `连续输错 ${r.fails} 次，已锁定 5 分钟` : '账号或密码错误',
+    });
+  }
+  loginLimiter.reset(key);
+  setAuthCookie(res, req, auth);
+  return sendJson(res, 200, { ok: true });
+});
+
+/** 登录页用：只需要知道「要不要填账号」，不回账号名，避免给爆破者送提示 */
+on('GET', '/api/auth/mode', async (req, res) => {
+  const a = currentAuth();
+  return sendJson(res, 200, { enabled: a.enabled, needUsername: a.needUsername, mode: a.mode });
+});
+
+/** 面板设置访问账号：设 / 改 / 关都走这里，不进 /api/settings 白名单，避免哈希被任意写 */
+on('POST', '/api/auth/set', async (req, res) => {
+  const body = await readBody(req);
+  const prev = currentAuth();
+  const turningOff = !String(body.username || '').trim() && !String(body.password || '');
+
+  // 已开着门禁时，任何改动都要先验证当前身份（防会话被冒用后直接改密或关掉门禁）
+  if (prev.enabled) {
+    const cp = String(body.currentPassword || '');
+    const curOk = prev.mode === 'panel'
+      ? await verifyPassword(cp, prev.salt, prev.hash)
+      : cp === prev.password;
+    if (!curOk) return sendJson(res, 403, { error: '当前密码不对' });
+  }
+
+  if (turningOff) {
+    // 面板显式关闭，压过 YAML 的旧值；否则一重启又被环境变量顶回来
+    saveSettings({ auth: { username: '', salt: '', hash: '', sessionSecret: '', disabled: true, updatedAt: Date.now() } });
+    clearAuthCookie(res);
+    return sendJson(res, 200, { ok: true, settings: publicSettings() });
+  }
+
+  const v = validateCredential(body.username, body.password);
+  if (!v.ok) return sendJson(res, 400, { error: v.error });
+  if (String(body.confirm || '') !== String(body.password || '')) return sendJson(res, 400, { error: '两次输入的密码不一致' });
+
+  const salt = makeSalt();
+  const hash = await hashPassword(v.password, salt);
+  const oldSecret = String(loadSettings().auth?.sessionSecret || '');
+  // 会话密钥复用：改密码会换 hash → 令牌自然变，旧 Cookie 全部作废；容器重启也不踢人
+  const sessionSecret = /^[0-9a-f]{64}$/.test(oldSecret) ? oldSecret : makeSecret();
+  saveSettings({ auth: { username: v.username, salt, hash, sessionSecret, disabled: false, updatedAt: Date.now() } });
+  const next = currentAuth();
+  setAuthCookie(res, req, next); // 用新哈希重签，当前页面不掉线
+  return sendJson(res, 200, { ok: true, settings: publicSettings() });
+});
+
+on('POST', '/api/logout', async (req, res) => {
+  clearAuthCookie(res);
   return sendJson(res, 200, { ok: true });
 });
 
@@ -1053,12 +1144,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
 
-  // 访问密码门禁
-  if (ACCESS_PASSWORD) {
+  // 访问账号门禁（面板设置优先，实时生效）
+  const auth = currentAuth();
+  if (auth.enabled) {
     const isApi = pathname.startsWith('/api');
-    const openPath = ['/login', '/api/login', '/api/health'].includes(pathname);
+    const openPath = ['/login', '/api/login', '/api/health', '/api/auth/mode'].includes(pathname);
     const staticish = ['/style.css', '/app.js', '/favicon.svg', '/favicon.ico', '/logo.svg'].includes(pathname);
-    const authed = parseCookies(req)[AUTH_COOKIE] === authToken();
+    const authed = parseCookies(req)[AUTH_COOKIE] === authToken(auth);
     if (!openPath && !(staticish && !isApi) && !authed) {
       if (isApi) return sendJson(res, 401, { error: '未登录', needLogin: true });
       res.writeHead(302, { Location: '/login' });
@@ -1069,7 +1161,13 @@ const server = http.createServer(async (req, res) => {
   // 静态文件
   if (req.method === 'GET') {
     if (pathname === '/' || pathname === '/index.html') return serveFile(res, path.join(publicDir, 'index.html'));
-    if (pathname === '/login') return serveFile(res, path.join(publicDir, 'login.html'));
+    if (pathname === '/login') {
+      if (!auth.enabled) {
+        res.writeHead(302, { Location: '/' });
+        return res.end();
+      }
+      return serveFile(res, path.join(publicDir, 'login.html'));
+    }
     const staticMap = {
       '/style.css': 'style.css',
       '/app.js': 'app.js',

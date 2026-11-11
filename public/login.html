@@ -32,25 +32,46 @@
       </svg>
     </span>
     <h1>NAS影视下载器</h1>
-    <p>请输入访问密码</p>
-    <input id="pwd" type="password" placeholder="访问密码" autofocus />
+    <p id="gateTip">请输入访问密码</p>
+    <div id="usrRow" hidden><input id="usr" placeholder="登录账号" autocomplete="username" /></div>
+    <input id="pwd" type="password" placeholder="访问密码" autocomplete="current-password" />
     <button class="btn primary" id="go">进入</button>
     <div class="hint" id="msg" style="margin-top:12px"></div>
   </div>
 </div>
 <script>
+  const $ = (id) => document.getElementById(id);
   const go = async () => {
-    const password = document.getElementById('pwd').value;
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    if (res.ok) location.href = '/';
-    else document.getElementById('msg').textContent = '密码错误';
+    const body = { password: $('pwd').value };
+    if (!$('usrRow').hidden) body.username = $('usr').value;
+    $('msg').textContent = '';
+    let res;
+    try {
+      res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      $('msg').textContent = '无法连接服务，请确认容器正在运行';
+      return;
+    }
+    if (res.ok) { location.href = '/'; return; }
+    const d = await res.json().catch(() => ({}));
+    $('msg').textContent = d.error || '账号或密码错误';
+    $('pwd').value = '';
+    $('pwd').focus();
   };
-  document.getElementById('go').onclick = go;
-  document.getElementById('pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  $('go').onclick = go;
+  document.querySelectorAll('.gate input').forEach((el) =>
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); }));
+  // 免登录直接回首页；面板设了账号才显示账号框（compose 的 ACCESS_PASSWORD 只有密码）
+  fetch('/api/auth/mode').then((r) => r.json()).then((m) => {
+    if (!m.enabled) { location.href = '/'; return; }
+    $('usrRow').hidden = !m.needUsername;
+    if (m.needUsername) $('gateTip').textContent = '请输入登录账号和密码';
+    (m.needUsername ? $('usr') : $('pwd')).focus();
+  }).catch(() => { $('pwd').focus(); });
 </script>
 </body>
 </html>

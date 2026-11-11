@@ -186,7 +186,7 @@ git pull && docker compose up -d --build
 | `MEDIA_ROOT` | `/media` | 自动发现存储库的根目录，其下每个一级目录算一个库 |
 | `DOWNLOADS_DIRS` | 空 | 手动指定库列表，如 `影视=/media/影视,影视资源=/media/影视资源`；设置后优先于自动发现 |
 | `ARIA2_SECRET` | 空 | aria2 RPC 密钥，建议设置 |
-| `ACCESS_PASSWORD` | 空 | 设置后访问需要密码，暴露到公网时务必设置 |
+| `ACCESS_PASSWORD` | 空 | 访问密码的初始值/兜底；也可在「设置 → 常规与下载 → 访问账号」里设置登录账号和密码，面板设置优先、改完立即生效。暴露到公网时务必设置 |
 | `TORRENT_META_TIMEOUT` | `70000` | 读取种子内文件列表的最长等待时间（毫秒），冷门资源可调大 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 

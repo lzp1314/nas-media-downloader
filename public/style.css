@@ -560,6 +560,8 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .pw.w110 { flex: 0 0 110px; min-width: 110px; }
 .pw.w120 { flex: 0 0 120px; min-width: 120px; }
 .pw.w140 { flex: 0 0 140px; min-width: 140px; }
+/* 访问账号的密码框：点眼睛看明文要能看清整串，别被 36px 的眼睛挤没；窄屏允许收缩换行 */
+.spanel[data-panel="auth"] .pw.w140 { flex: 0 1 190px; min-width: 150px; }
 /* 更新日多选：七个方块，选几天点几天（下拉只能选一天，一周更两天的剧没法填） */
 .daypick { display: flex; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; }
 .dchip {

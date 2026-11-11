@@ -2093,7 +2093,7 @@ $('btnLogout').onclick = async () => {
 };
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.32';
+let currentVersion = '1.2.33';
 
 function setVersion(v) {
   if (!v) return;

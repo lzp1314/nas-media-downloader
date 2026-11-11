@@ -2029,7 +2029,7 @@ document.querySelectorAll('#settingsNav .snav').forEach((b) =>
 );
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.30';
+let currentVersion = '1.2.31';
 
 function setVersion(v) {
   if (!v) return;
@@ -2091,6 +2091,7 @@ async function loadSubs() {
 }
 
 function subCard(s) {
+  const isMovie = s.type === 'movie';
   // 更新日可能是数组（一周更两天），老数据只有单值 updateDay
   const ds = Array.isArray(s.updateDays) && s.updateDays.length ? s.updateDays : s.updateDay ? [Number(s.updateDay)] : [];
   const off = s.enabled === false;
@@ -2102,19 +2103,26 @@ function subCard(s) {
     : s.nextCheckAt
       ? `下次检查 ${fmtWhen(s.nextCheckAt)}`
       : '排队等首次检查';
-  // 更新日标签：填了才有意义，没填就灰着说明「匀速轮询」
+  // 更新日标签只有剧集才有意义；电影只下一整部，不按周更新
   const at = String(s.updateTime || '');
   const perNight = Math.max(1, Number(s.episodesPerNight) || 1);
-  const dayTag = ds.length
+  const dayTag = isMovie ? '' : ds.length
     ? `<span class="day">${esc(ds.map((d) => DOW_NAME[d]).join('、'))}${
         at ? ` ${esc(at)} 起` : '更新'
       }${perNight > 1 ? ` · 每晚 ${perNight} 集` : ''}</span>`
     : '<span class="day off">未指定更新日</span>';
   const logs = (s.log || []).slice(-2).reverse();
-  // TMDB 那一行：状态 + 总集数 + 下一集日期。拿不到就整行不出现，不留空壳
+  // TMDB 那一行：剧集看集数/下一集，电影看状态/上映日。拿不到就整行不出现
   const tm = s.tmdbMeta;
   let tmLine = '';
-  if (tm && (tm.statusCn || tm.totalEpisodes || tm.nextAirDate)) {
+  if (isMovie) {
+    if (tm && (tm.statusCn || tm.releaseDate)) {
+      const bits = [];
+      if (tm.statusCn) bits.push(tm.statusCn);
+      if (tm.releaseDate) bits.push(`上映 ${tm.releaseDate}`);
+      tmLine = `<div class="line tm">TMDB：${esc(bits.join(' · '))}</div>`;
+    }
+  } else if (tm && (tm.statusCn || tm.totalEpisodes || tm.nextAirDate)) {
     const bits = [];
     if (tm.statusCn) bits.push(tm.statusCn);
     if (tm.totalEpisodes) bits.push(`共 ${tm.totalEpisodes} 集`);
@@ -2129,16 +2137,23 @@ function subCard(s) {
     else if (tm.lastAirDate) bits.push(`上集 ${tm.lastAirDate}`);
     tmLine = `<div class="line tm">TMDB：${esc(bits.join(' · '))}</div>`;
   }
-  return `<div class="sub${off ? ' off' : ''}" data-id="${esc(s.id)}">
+  // 电影没有「集」的概念，下发失败要换说法，片库根提示也不提集数
+  const failText = isMovie ? '下载失败，等待重试' : `${pending} 集下发失败`;
+  const rootTip = isMovie
+    ? '保存目录是片库根目录，电影要存到自己的文件夹里，点「编辑」改一下'
+    : '保存目录是片库根目录，集数会算成整个片库的量，点「编辑」改到这部剧自己的文件夹';
+  const typeTag = `<span class="subtype-tag ${isMovie ? 'm' : 't'}">${isMovie ? '电影' : '剧集'}</span>`;
+  return `<div class="sub${off ? ' off' : ''}${isMovie ? ' movie' : ''}" data-id="${esc(s.id)}">
   <div class="top">
+    ${typeTag}
     <div class="nm" title="${esc(s.title)}">${esc(s.title)}</div>
     ${dayTag}
     <span class="stat ${busy ? 'downloading' : off ? 'paused' : 'done'}">${busy ? '检查中' : off ? '已暂停' : '订阅中'}</span>
   </div>
-  <div class="line">${esc(last)}${pending ? ` · <span class="warn">${pending} 集下发失败</span>` : ''}</div>
+  <div class="line">${esc(last)}${pending ? ` · <span class="warn">${failText}</span>` : ''}</div>
   <div class="path" title="${esc(s.dir)}">${esc(s.dir)}</div>
   ${tmLine}
-  ${s.rootBad ? '<div class="line warn">保存目录是片库根目录，集数会算成整个片库的量，点「编辑」改到这部剧自己的文件夹</div>' : ''}
+  ${s.rootBad ? `<div class="line warn">${rootTip}</div>` : ''}
   <div class="line">${esc(when)}</div>
   <div class="acts">
     <button class="btn sm" data-act="check"${busy ? ' disabled' : ''}>${busy ? '检查中…' : '立即检查'}</button>
@@ -2155,8 +2170,15 @@ function renderSubs(d = subData) {
   const stats = d?.stats || {};
   const limit = stats.dailyLimit || 36;
   const used = stats.dailyUsed || 0;
-  $('subStat').innerHTML = `共 ${subItems.length} 个 · 今日已检查 ${used}/${limit}`;
-  $('subList').innerHTML = subItems.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir) })).join('');
+  const tv = subItems.filter((s) => s.type !== 'movie');
+  const movies = subItems.filter((s) => s.type === 'movie');
+  $('subStat').innerHTML = `共 ${subItems.length} 个（剧集 ${tv.length} · 电影 ${movies.length}） · 今日已检查 ${used}/${limit}`;
+  // 始终按类型分组：不管另一类有没有，标题都在，数量变化时界面不会突然跳变
+  const group = (label, cls, arr) => arr.length
+    ? `<div class="subgroup ${cls}"><span class="sgdot"></span>${label}<span class="sgcount">${arr.length}</span></div>`
+      + arr.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir) })).join('')
+    : '';
+  $('subList').innerHTML = group('剧集订阅', 't', tv) + group('电影订阅', 'm', movies);
   $('subEmpty').hidden = subItems.length > 0;
   // 没配 TMDB 就提一句：不影响补集，但集数和播出日历要自己看。
   // 配了就不再唠叨——豆瓣只是备选，两个都有反而让人以为缺东西。
@@ -2164,8 +2186,12 @@ function renderSubs(d = subData) {
   const tmOk = Boolean(d?.tmdb?.ready);
   if (subItems.length && !tmOk) {
     hint.hidden = false;
-    const extra = d?.douban?.ready ? '' : '豆瓣也没配，别名准确度会差一些。';
-    hint.innerHTML = `没填 TMDB 密钥：总集数要自己填，也不会自动跟播出日历。${extra}<a href="#" id="subHintGo">去设置 → 影视元数据填上</a>`;
+    // 只订了电影时别再念叨「总集数/播出日历」——电影没这些概念
+    const tip = tv.length
+      ? '没填 TMDB 密钥：总集数要自己填，也不会自动跟播出日历。'
+      : '没填 TMDB 密钥：电影上映日期要自己留意，不会自动跟上映日历。';
+    const extra = tv.length && !d?.douban?.ready ? '豆瓣也没配，别名准确度会差一些。' : '';
+    hint.innerHTML = `${tip}${extra}<a href="#" id="subHintGo">去设置 → 影视元数据填上</a>`;
     $('subHintGo').addEventListener('click', (e) => {
       e.preventDefault();
       switchView('settings');
@@ -2221,6 +2247,43 @@ function getSubDays() {
 }
 document.querySelectorAll('#subDays .dchip').forEach((b) => b.addEventListener('click', () => b.classList.toggle('on')));
 
+/**
+ * 切换订阅类型（剧集 / 电影）。
+ * 电影只下一次整包，没有更新日、集数、补集范围这些概念，
+ * 所以整块藏起来而不是留着让人误以为要填。
+ */
+function setSubType(type, { fromUser = false } = {}) {
+  const t = type === 'movie' ? 'movie' : 'tv';
+  state.tmdbType = t;
+  const isMovie = t === 'movie';
+  document.querySelectorAll('#subType .stchip').forEach((b) => {
+    b.classList.toggle('on', b.dataset.type === t);
+  });
+  $('subTvOnly').hidden = isMovie;
+  $('subTitleLabel').textContent = isMovie ? '片名' : '剧名';
+  $('subTitle').placeholder = isMovie ? '例如：流浪地球 3' : '例如：凡人修仙传';
+  $('subDirText').placeholder = isMovie ? '点右边「选择」挑这部电影自己的文件夹' : '点右边「选择」挑这部剧自己的文件夹';
+  $('btnTmdb').title = isMovie ? '从 TMDB 选片，带出上映日期' : '从 TMDB 选剧，带出总集数和下一集播出日';
+  // 豆瓣查只补剧集集数/别名，电影没集数概念，电影模式下藏掉免得点了没用
+  $('btnDouban').hidden = isMovie;
+  $('subTopTip').innerHTML = isMovie
+    ? '填片名就能用。点 <b>TMDB 查</b> 能带出上映日期，上映后自动下载整部。<br />电影不按集、没有更新日：只在你点检查或到上映日时，找一次整部资源下完为止。'
+    : '填剧名就能用。点 <b>TMDB 查</b> 能自动带出总集数和下一集播出日（连更新日都不用挑）。<br />更新时刻只影响<b>多久查一次</b>，不影响补集：例 周三 20:00 → 20 点起每 30 分钟查一次。';
+  // 用户手点切换时才清空剧集字段；编辑回填、TMDB 回填不该被这里清掉
+  if (fromUser && isMovie) {
+    $('subTotal').value = '';
+    $('subFrom').value = '';
+    $('subTo').value = '';
+    setSubDays([]);
+    $('subTime').value = '';
+    $('subPerNight').value = '1';
+  }
+}
+
+document.querySelectorAll('#subType .stchip').forEach((b) => {
+  b.addEventListener('click', () => setSubType(b.dataset.type, { fromUser: true }));
+});
+
 function openSubModal(sub) {
   editingSubId = sub?.id || '';
   $('subModalTitle').textContent = sub ? '编辑订阅' : '新建订阅';
@@ -2237,9 +2300,15 @@ function openSubModal(sub) {
   $('subTmdbId').value = sub?.tmdbId ? String(sub.tmdbId) : '';
   state.tmdbTitle = sub?.title || '';
   setSubDir(sub ? sub.dir : defaultSubDir());
+  // 编辑时把类型回填：不回填的话，编辑一个电影订阅又没重选 TMDB，会被当成剧集存回去。
+  // 新建时固定回「剧集」，不用上次残留的类型，免得点「新建订阅」莫名其妙变成电影。
+  setSubType(sub ? (sub.type || 'tv') : 'tv');
   // 老订阅可能存的是片库根，进来就点明，不然下次检查又扫一遍全库
+  const kindWord = sub?.type === 'movie' ? '这部电影' : '这部剧';
   $('subFormTip').textContent = isLibRoot($('subDir').value)
-    ? '这个订阅的保存目录是片库根目录，会扫到整个片库、集数算不准。请点「选择」改成这部剧自己的文件夹。'
+    ? sub?.type === 'movie'
+      ? `保存目录是片库根目录，电影要存到自己的文件夹里。请点「选择」改成${kindWord}的目录。`
+      : '这个订阅的保存目录是片库根目录，会扫到整个片库、集数算不准。请点「选择」改成这部剧自己的文件夹。'
     : '';
   $('subModal').hidden = false;
   setTimeout(() => $('subTitle').focus(), 30);
@@ -2323,7 +2392,8 @@ async function searchTmdb(q) {
 }
 
 function applyTmdb(d) {
-  state.tmdbType = d.mediaType === 'movie' ? 'movie' : 'tv';
+  const tmdbType = d.mediaType === 'movie' ? 'movie' : 'tv';
+  setSubType(tmdbType);
   $('subTmdbId').value = String(d.id || '');
   state.tmdbTitle = d.name || '';
   if (d.name) $('subTitle').value = d.name;
@@ -2331,9 +2401,13 @@ function applyTmdb(d) {
   if (d.originalName && d.originalName !== d.name) $('subKeyword').value = d.originalName;
 
   // 电影订阅：没有集数/播出日历概念，清掉剧集专属字段，只留「到点下整部」
-  if (state.tmdbType === 'movie') {
+  if (tmdbType === 'movie') {
     $('subTotal').value = '';
+    $('subFrom').value = '';
+    $('subTo').value = '';
     setSubDays([]);
+    $('subTime').value = '';
+    $('subPerNight').value = '1';
     const when = d.releaseDate ? `（预计 ${d.releaseDate} ${d.statusCn || ''}）` : (d.statusCn ? `（${d.statusCn}）` : '');
     $('subFormTip').textContent = `TMDB 电影${when}：无需填集数/更新日，到点自动下载整部`;
     return;
@@ -2448,10 +2522,13 @@ $('subSave').addEventListener('click', async () => {
     body.updateDays = [];
     body.updateDay = 0;
     body.updateTime = '';
+    body.episodesPerNight = 1;
   }
-  if (!body.title) return toast('先填剧名', true);
-  if (!body.dir) return toast('先点「选择」挑这部剧的保存目录', true);
-  if (isLibRoot(body.dir)) return toast('保存目录不能是片库根目录，请选到这部剧自己的文件夹', true);
+  const noun = body.type === 'movie' ? '片名' : '剧名';
+  const which = body.type === 'movie' ? '这部电影' : '这部剧';
+  if (!body.title) return toast(`先填${noun}`, true);
+  if (!body.dir) return toast(`先点「选择」挑${which}的保存目录`, true);
+  if (isLibRoot(body.dir)) return toast(`保存目录不能是片库根目录，请选到${which}自己的文件夹`, true);
   const btn = $('subSave');
   btn.disabled = true;
   try {

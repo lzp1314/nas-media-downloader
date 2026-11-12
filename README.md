@@ -43,22 +43,44 @@ cd /vol1/1000/docker/nas-media-downloader
 
 ### 2. 改配置
 
-**`docker-compose.yml`** 只需要改端口和你的媒体目录：
+把下面这段**整段复制**成 NAS 项目目录里的 `docker-compose.yml`（这是完整文件，不是节选）：
 
 ```yaml
-network_mode: host       # 使用宿主网络：共享 NAS 的 IPv6，BT 端口免 NAT
-environment:
-  - PORT=9696            # Web 界面端口
-  - BT_PORT=51413        # BT 监听端口
-  - PUID=1000            # 你的用户 UID，SSH 里执行 id 查看
-  - PGID=1000
-  - ARIA2_SECRET=换成随机字符串
-volumes:
-  # 左边是 NAS 上真实的媒体目录，右边决定界面上显示的库名
-  - /vol1/1000/影视:/media/影视
-  - /vol4/1000/影视资源:/media/影视资源
-  - ./config:/config
+services:
+  nas-media-downloader:
+    image: ghcr.io/lzp1314/nas-media-downloader:latest
+    # 想从源码构建：注释掉上面 image 行，启用下面这行
+    # build: .
+    container_name: nas-media-downloader
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=9696              # Web 界面端口
+      - BT_PORT=51413          # BT 监听端口，与其他 BT 软件冲突时改成 51414
+      - ENABLE_DHT6=1          # 有 IPv6 时开启 IPv6 DHT
+      - PUID=1000              # 下载文件属主，SSH 执行 id 查看
+      - PGID=1000
+      # 必须显式写：Web 与 aria2 靠它对齐 RPC token，删掉会显示引擎离线
+      - ARIA2_SECRET=nas_media_downloader_rpc
+      # 留空则局域网免密；账号密码到「设置 → 访问账号」里设，立即生效
+      - ACCESS_PASSWORD=
+      # aria2 兜底下载目录，必须指向下面真实挂载的某个库
+      - DOWNLOADS_DIR=/media/影视
+    volumes:
+      # 左边换成 NAS 上的真实路径，右边是界面显示的库名，右边保持不动
+      - /vol1/1000/影视:/media/影视
+      # 多一块盘就再加一行，例如：
+      # - /vol4/1000/影视资源:/media/影视资源
+      - ./config:/config
 ```
+
+按自己情况只改三处：`volumes` 左边的媒体路径、`DOWNLOADS_DIR`（跟着第一个库的名字走）、`PUID` / `PGID`。加新盘只要在 `volumes` 里再追加一行映射，程序会自动把它识别成一个库；`MEDIA_ROOT` 默认 `/media`，不用单独写。
+
+两点注意：
+
+- `ARIA2_SECRET` 别删。容器内的 aria2 有默认密钥，而 Web 端读的是这个环境变量，不显式写一行两边 token 就对不上，设置页会显示下载引擎离线。
+- `ACCESS_PASSWORD` 留空即可，装好后到「设置 → 访问账号」里设登录账号和密码，面板设置优先、改完立即生效，不用改 YAML 也不用重建容器。
 
 容器使用宿主网络，不再需要 `ports:` 映射；host 模式让容器共享 NAS 的网络栈与 IPv6 能力，BT 监听端口无需 NAT。
 
@@ -185,7 +207,7 @@ git pull && docker compose up -d --build
 | `PUID` / `PGID` | `1000` | 下载文件的属主，需和媒体目录一致 |
 | `MEDIA_ROOT` | `/media` | 自动发现存储库的根目录，其下每个一级目录算一个库 |
 | `DOWNLOADS_DIRS` | 空 | 手动指定库列表，如 `影视=/media/影视,影视资源=/media/影视资源`；设置后优先于自动发现 |
-| `ARIA2_SECRET` | 空 | aria2 RPC 密钥，建议设置 |
+| `ARIA2_SECRET` | 空 | aria2 RPC 密钥；**必须在 compose 里显式写一行**，否则 Web 与容器内的 aria2 token 对不上，设置页会显示引擎离线 |
 | `ACCESS_PASSWORD` | 空 | 访问密码的初始值/兜底；也可在「设置 → 常规与下载 → 访问账号」里设置登录账号和密码，面板设置优先、改完立即生效。暴露到公网时务必设置 |
 | `TORRENT_META_TIMEOUT` | `70000` | 读取种子内文件列表的最长等待时间（毫秒），冷门资源可调大 |
 | `TZ` | `Asia/Shanghai` | 时区 |

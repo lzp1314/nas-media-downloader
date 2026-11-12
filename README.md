@@ -32,18 +32,22 @@
 
 ## 部署
 
-### 1. 放到 NAS 上
+### 1. 建项目目录
+
+推荐 clone 仓库 —— 只是为了拿到 `docker-compose.yml` 和 `config/*.example.json`，**不需要用源码构建镜像**：
 
 ```bash
-git clone <你的仓库地址> /vol1/1000/docker/nas-media-downloader
+git clone https://github.com/lzp1314/nas-media-downloader.git /vol1/1000/docker/nas-media-downloader
 cd /vol1/1000/docker/nas-media-downloader
 ```
 
-没有 git 就把整个目录拷进去。
+不用 git 也行：在 NAS 上新建一个空目录，把第 2 节的 YAML 存成 `docker-compose.yml`，再建一个空的 `config/` 子目录（第 3 节要往里写 `sites.json`）。
+
+> `./config:/config` 这个卷会让 Docker 自动建出 `config/` 目录，但**镜像里不含任何示例配置文件**（`.dockerignore` 排除了整个 `config/`）。只写 compose、不准备 config 的话，第 3 节的 `cp config/sites.example.json` 会找不到文件；这种情况直接照模板手写 `config/sites.json` 即可。
 
 ### 2. 改配置
 
-把下面这段**整段复制**成 NAS 项目目录里的 `docker-compose.yml`（这是完整文件，不是节选）：
+把下面这段**整段复制**成 NAS 项目目录里的 `docker-compose.yml`（这是完整文件，不是节选；clone 下来的目录里已有一份，直接覆盖即可）：
 
 ```yaml
 services:
@@ -92,7 +96,7 @@ services:
 
 **步骤**
 
-1. 在 NAS 的 compose 目录里，把示例复制成自己的配置：
+1. 在 NAS 的 compose 目录里，把示例复制成自己的配置（如果按上面「不用 git」的方式建目录，直接照下方模板新建 `config/sites.json` 即可）：
 
    ```bash
    cp config/sites.example.json config/sites.json
@@ -100,7 +104,7 @@ services:
 
 2. 编辑 `config/sites.json`，按下面模板填 `sourceA`（资源 A）和 `sourceB`（资源 B）。两者可以只填一个，留空的那个会自动跳过，界面显示「未接入」，不会报错。
 3. 保存后重启容器（`docker compose restart`）；不重启也行，配置按文件修改时间自动热加载。
-4. 打开「设置 → 资源接入」，看资源库 A / 资源库 B 是否显示已接入。地址只存在本机，不会回显到页面上。
+4. 打开「设置 → 片源接入」，看资源库 A / 资源库 B 是否显示已接入。地址只存在本机，不会回显到页面上。
 5. `config/sites.json` 已被 `.gitignore` 与 `.dockerignore` 排除，**不会提交到仓库、不会打进镜像**，只留在你自己的 NAS 上。
 
 **模板**（下面全部是占位符，不代表任何真实站点）
@@ -136,9 +140,11 @@ services:
 | B | `apiUrl` | 该站接口根地址 |
 | B | `searchUrl` | 站内搜索的提交地址 |
 
+需要注意：`sourceA` / `sourceB` 是本项目按**固定接口协议**写好的适配器，不是通用网页解析器。例如 A 会在 `baseUrl` 后拼 `/prod/api/v1/...` 并附带 `app_id`、`identity`，B 走的是另一套约定。这里要填的是符合该接口约定的服务；随便填一个普通网站首页，程序不会报错，只会一直显示未接入或搜不到结果。本项目不适配任意网站。
+
 如你配置的数据源按其自身条款需要登录，请登录**你自己有权使用的账号**；凭据只保存在本机 `config/` 目录，软件不保存密码，也不上传到任何服务器。
 
-其它可选配置（磁力搜索源、首页推荐词）分别是 `config/` 下的 `magnet-sources.example.json`、`hot-sources.example.json`，同样复制成不带 `.example` 的文件再填写，都不进仓库、不进镜像。磁力搜索源也可以在「设置 → 资源接入」里添加：填站点首页或带 `{kw}` 的搜索地址 → 点「测试当前地址」→ 点「添加」，程序会自己找入口；每行可开关、测试、移除。
+其它可选配置（磁力搜索源、首页推荐词）分别是 `config/` 下的 `magnet-sources.example.json`、`hot-sources.example.json`，同样复制成不带 `.example` 的文件再填写，都不进仓库、不进镜像。磁力搜索源也可以在「设置 → 片源接入」里添加：填站点首页或带 `{kw}` 的搜索地址 → 点「测试当前地址」→ 点「添加」，程序会自己找入口；每行可开关、测试、移除。
 
 ### 4. 启动
 
@@ -146,13 +152,13 @@ services:
 docker compose up -d
 ```
 
-默认直接拉取 GitHub 自动构建的镜像（`ghcr.io/lzp1314/nas-media-downloader:latest`，x86 / ARM 双架构），NAS 上不需要装 Node、不需要源码。
+默认直接拉取 GitHub 自动构建的镜像（`ghcr.io/lzp1314/nas-media-downloader:latest`，x86 / ARM 双架构），NAS 上不需要装 Node、也不用源码构建；第 1 步 clone 只是为了拿到 compose 和示例配置。
 
 想自己从源码构建：把 `docker-compose.yml` 里的 `image:` 行注释掉、取消 `build: .` 的注释，再执行 `docker compose up -d --build`。
 
 打开 `http://NAS的IP:9696`。
 
-群晖 / 飞牛也可以走图形界面：Docker → Compose → 新建项目 → 选择这个目录的 `docker-compose.yml`。
+群晖 / 飞牛也可以走图形界面：Docker → Compose → 新建项目 → 把第 2 节的 YAML 粘进去（或指向已有的 `docker-compose.yml`），并确认项目目录里已经建好 `config/`。
 
 ### 更新
 
@@ -176,7 +182,7 @@ git pull && docker compose up -d --build
 
 宿主网络模式下容器直接监听 NAS 本机端口，无需在 Docker 里再做映射；路由器 / 防火墙按上表放行即可。
 
-**下载速度主要取决于 51413 有没有放通。** 除了 compose 里的映射，还要在路由器上做端口转发（51413 TCP + UDP，指向 NAS 内网 IP），并在 NAS 防火墙放行同端口。没放通也能下，但只能连到主动连进来的 peer，速度会明显差一截。
+**下载速度主要取决于 51413 有没有放通。** host 网络下 compose 里没有 `ports:` 映射，容器直接监听 NAS 的 51413；需要在 NAS 防火墙放行该端口（TCP + UDP），如果 NAS 在路由器后面、希望外部 peer 能主动连入，再在路由器上把 51413 TCP/UDP 转发到 NAS 内网 IP。**只转发 BT 端口，不要把 Web 9696 直接暴露到公网**；确实需要外网访问 Web，请自行配置 HTTPS 反向代理与访问控制。没放通也能下，但只能连到主动连进来的 peer，速度会明显差一截。
 
 <p align="center">
   <img src="docs/shot-tasks.png" alt="下载任务" width="880" />
@@ -203,12 +209,15 @@ git pull && docker compose up -d --build
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `PORT` | `8080` | 容器内 Web 端口 |
-| `PUID` / `PGID` | `1000` | 下载文件的属主，需和媒体目录一致 |
+| `PORT` | `8080` | Web 端口。**compose 里必须显式写 `PORT=9696`**，删掉这行会退回 8080，`http://NAS的IP:9696` 就打不开 |
+| `BT_PORT` | `51413` | BT / DHT 监听端口，host 模式下直接占用宿主端口；与其他 BT 软件冲突时改成 51414 |
+| `ENABLE_DHT6` | `false` | 设为 `1` 开启 IPv6 DHT（NAS 有 IPv6 时） |
+| `PUID` / `PGID` | `1000` | 下载文件的属主，需和媒体目录一致；SSH 执行 `id` 查看 |
 | `MEDIA_ROOT` | `/media` | 自动发现存储库的根目录，其下每个一级目录算一个库 |
-| `DOWNLOADS_DIRS` | 空 | 手动指定库列表，如 `影视=/media/影视,影视资源=/media/影视资源`；设置后优先于自动发现 |
+| `DOWNLOADS_DIR` | `/downloads` | aria2 的兜底下载目录；**必须指向 volumes 里真实挂载的某个库**（compose 里写 `/media/影视`），否则文件会写进容器层、重启丢失 |
+| `DOWNLOADS_DIRS` | 空 | 手动指定库列表，如 `影视=/media/影视,影视资源=/media/影视资源`；设置后优先于自动发现。注意与上一行是两个不同变量 |
 | `ARIA2_SECRET` | 空 | aria2 RPC 密钥；**必须在 compose 里显式写一行**，否则 Web 与容器内的 aria2 token 对不上，设置页会显示引擎离线 |
-| `ACCESS_PASSWORD` | 空 | 访问密码的初始值/兜底；也可在「设置 → 常规与下载 → 访问账号」里设置登录账号和密码，面板设置优先、改完立即生效。暴露到公网时务必设置 |
+| `ACCESS_PASSWORD` | 空 | 访问密码的初始值/兜底；也可在「设置 → 访问账号」（独立导航项）里设置登录账号和密码，面板设置优先、改完立即生效。暴露到公网时务必设置 |
 | `TORRENT_META_TIMEOUT` | `70000` | 读取种子内文件列表的最长等待时间（毫秒），冷门资源可调大 |
 | `TZ` | `Asia/Shanghai` | 时区 |
 
@@ -242,11 +251,14 @@ nas-media-downloader/
 
 | 现象 | 处理 |
 |---|---|
-| 页面打不开 | `docker logs nas-media-downloader` 看是否端口占用 |
-| 设置里引擎显示离线 | aria2c 没起来，看容器启动日志；或切到 qBittorrent |
-| 提示「资源库未接入」 | `config/sites.json` 没填或没挂载，填好后重启容器 |
+| 页面打不开 | `docker logs nas-media-downloader` 看是否端口占用；另外确认 compose 里写了 `PORT=9696`（不写会退回 8080） |
+| 设置里引擎显示离线 | aria2c 没起来，看容器启动日志；或切到 qBittorrent；也可能是 compose 漏写了 `ARIA2_SECRET` |
+| 提示「资源库未接入」 | 出厂就是空壳，**未接入是正常状态，不是故障**。想用就按第 3 节填好 `config/sites.json`；不填也能用首页「粘贴磁力链接」手动下载 |
+| 填了片源还是搜不到 | 确认填的是符合本项目接口约定的服务（见第 3 节说明），普通网站首页不会被解析；可在「设置 → 片源接入」看接入状态 |
 | 下载一直是 0 速度 | 51413 没放通，或该资源本身没有做种者 |
 | 搜不到片 | 换个片名，或在设置里同步一次片库 |
+| 想用 qBittorrent 下载 | 「设置 → 常规与下载 → 下载引擎」里把「分流方式」选成「自动分流（推荐）」或「全部走 qBittorrent」，在出现的 qBittorrent 输入框里填地址（如 `http://127.0.0.1:8080`）、用户名、密码，点「保存并测试」；填了账号密码才算接入 |
+| 忘记登录密码 / 连错 5 次被锁 | 连错 5 次锁 5 分钟，等一会儿或重启容器即可清空计数（计数只在内存里）。忘记密码：停容器 → 编辑 `config/settings.json`，删掉 `auth` 整段（**别删整个文件**，会连引擎、目录和登录态一起丢）→ 重启；compose 里 `ACCESS_PASSWORD` 为空则免密进入，填了就用那个密码登录 → 到「设置 → 访问账号」重设 |
 | 点下载提示无权限 | 目录不在白名单内，先在 compose 里映射该目录 |
 | 权限不对、文件改不了 | `PUID/PGID` 与该目录属主不一致，用 `ls -nd 目录` 查 |
 | 媒体库里看不到片 | 下拉框选错库了，两个盘都挂上后重新选一次目录 |

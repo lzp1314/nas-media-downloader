@@ -173,6 +173,24 @@ export function looksLikeVideo(name) {
 const MIN_EPISODE_BYTES = 30 * 1024 * 1024;
 
 /**
+ * 从文件名里认「第几季第几集」：S02E05 / S2.E05 / S02 E05。
+ * 只用于自动完成的季判定，不影响 parseEpisodes 的集号解析。
+ * 中文命名的「第5集」没有季号，多季剧就 conservative 地不自动完成。
+ */
+const SEASON_RE = /\bS(\d{1,2})\s*[._\-]?\s*E(\d{1,3})(?:\s*[-~]?\s*E(\d{1,3}))?(?![0-9])/i;
+
+/** @returns {{season:number, episodes:number[]}|null} 连播 S02E05E06 会带出两集 */
+export function parseSeasonEpisode(name) {
+  const m = SEASON_RE.exec(String(name || ''));
+  if (!m) return null;
+  const season = Number(m[1]);
+  const episodes = [Number(m[2])];
+  if (m[3]) episodes.push(Number(m[3]));
+  if (season <= 0 || episodes.some((n) => !(n > 0))) return null;
+  return { season, episodes };
+}
+
+/**
  * 从种子文件清单里挑出「这次真要下的那几个文件」。
  *
  * 站点上一个种子常常一次带好几集（[38-43集]），整包下会白占几 GB，
@@ -208,6 +226,7 @@ export function pickFileIndexes(files, want) {
  */
 export async function scanEpisodes(dir, { maxDepth = 3 } = {}) {
   const found = new Set();
+  const seasonMap = new Map(); // 季号 -> 该季已识别到的集号集合
   let files = 0; // 合格的视频文件数（认不认得出集号都算）
   let matched = 0; // 其中有集号的
   let bytes = 0;
@@ -239,6 +258,11 @@ export async function scanEpisodes(dir, { maxDepth = 3 } = {}) {
       files += 1;
       bytes += size;
       const { episodes } = parseEpisodes(e.name);
+      const se = parseSeasonEpisode(e.name);
+      if (se) {
+        if (!seasonMap.has(se.season)) seasonMap.set(se.season, new Set());
+        for (const n of se.episodes) seasonMap.get(se.season).add(n);
+      }
       if (!episodes.length) continue;
       matched += 1;
       for (const n of episodes) found.add(n);
@@ -246,7 +270,11 @@ export async function scanEpisodes(dir, { maxDepth = 3 } = {}) {
   };
 
   await walk(dir, 0);
-  return { episodes: [...found].sort((a, b) => a - b), files, matched, bytes };
+  // 季分组单独返回：多季剧自动完成要按「实际订阅的那一季」算，不能混着全剧集号判
+  const seasons = [...seasonMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([season, set]) => ({ season, episodes: [...set].sort((a, b) => a - b) }));
+  return { episodes: [...found].sort((a, b) => a - b), seasons, files, matched, bytes };
 }
 
 /**

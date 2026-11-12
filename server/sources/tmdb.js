@@ -148,6 +148,11 @@ export function normalizeTv(d) {
     .map((x) => x?.title);
   const en = alt.filter((x) => String(x?.iso_3166_1 || '').toUpperCase() === 'US').map((x) => x?.title);
   const totalEpisodes = Number(d?.number_of_episodes) || 0;
+  // 每季集数：多季剧的 number_of_episodes 是全剧总数，集号每季又从 1 重数，
+  // 自动完成必须按「实际订阅的那一季」的 episode_count 判，不能拿全剧总数当上界。
+  const seasons = (Array.isArray(d?.seasons) ? d.seasons : [])
+    .map((x) => ({ number: Number(x?.season_number) || 0, episodeCount: Number(x?.episode_count) || 0 }))
+    .filter((x) => x.number > 0 && x.episodeCount > 0);
   return {
     id: Number(d?.id) || 0,
     mediaType: 'tv',
@@ -160,6 +165,7 @@ export function normalizeTv(d) {
     inProduction: Boolean(d?.in_production),
     totalEpisodes,
     totalSeasons: Number(d?.number_of_seasons) || 0,
+    seasons,
     // 只有这一集已经排期了才有值；完结剧这里是空的
     nextAirDate: String(next?.air_date || ''),
     nextAirSeason: Number(next?.season_number) || 0,
@@ -190,6 +196,7 @@ export function normalizeMovie(d) {
     statusCn: STATUS_CN[String(d?.status || '')] || String(d?.status || ''),
     totalEpisodes: 0,
     totalSeasons: 0,
+    seasons: [],
     nextAirDate: '',
     nextAirSeason: 0,
     nextAirEpisode: 0,

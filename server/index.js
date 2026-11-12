@@ -1048,6 +1048,19 @@ on('DELETE', '/api/sub/:id', async (req, res, params) => {
   }
 });
 
+/** 已归档的订阅手动恢复：清完成态、立刻排一次检查。不删除记录，随时可再归档 */
+on('POST', '/api/sub/:id/resume', async (req, res, params) => {
+  const item = getSub(params.id);
+  if (!item) return sendJson(res, 404, { error: '订阅不存在' });
+  const log = [...(item.log || []).slice(-29), { at: Date.now(), text: '已恢复订阅' }];
+  const updated = patchSub(item.id, {
+    state: '', doneAt: 0, doneSig: '', doneStreak: 0,
+    nextCheckAt: Date.now(), lastResult: '已恢复订阅，等待检查', failCount: 0,
+    log,
+  });
+  sendJson(res, 200, { ok: true, item: updated });
+});
+
 /** 手动触发一次检查：可能几十秒，走后台任务 + 轮询，避免被反代掐断 */
 on('POST', '/api/sub/:id/check', async (req, res, params) => {
   const item = getSub(params.id);

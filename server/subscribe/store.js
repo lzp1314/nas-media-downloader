@@ -88,6 +88,11 @@ function normalizeTmdbMeta(raw) {
     totalEpisodes: Math.max(0, num(raw.totalEpisodes)),
     // 多季剧的集号会重复（每季都从 1 开始），显示时要带季号才不歧义
     totalSeasons: Math.max(0, num(raw.totalSeasons)),
+    // 每季集数（多季剧自动完成要用），脏值丢掉
+    seasons: (Array.isArray(raw.seasons) ? raw.seasons : [])
+      .slice(0, 40)
+      .map((x) => ({ number: Math.max(0, num(x?.number)), episodeCount: Math.max(0, num(x?.episodeCount)) }))
+      .filter((x) => x.number > 0 && x.episodeCount > 0),
     releaseDate: day(raw.releaseDate),
     firstAirDate: day(raw.firstAirDate),
     nextAirDate: day(raw.nextAirDate),
@@ -151,8 +156,12 @@ export function normalize(raw) {
     tmdbId: Number(raw.tmdbId) > 0 ? Math.floor(Number(raw.tmdbId)) : 0,
     // 类型：电视剧（默认）或电影。电影订阅不按集、到点只下一次整包。
     type: raw.type === 'movie' ? 'movie' : 'tv',
-    // 订阅状态机：''（默认）/ waiting（待上映待开播）/ downloading（已下发）/ done（已下完）
+    // 订阅状态机：''（默认）/ waiting（待上映待开播）/ downloading（已下发）/ done（已完成归档）
     state: ['waiting', 'downloading', 'done'].includes(raw.state) ? raw.state : '',
+    // 自动完成：doneAt 归档时间；doneSig + doneStreak 保证「连续两次齐全」跨重启仍然有效
+    doneAt: num(raw.doneAt),
+    doneStreak: Math.max(0, num(raw.doneStreak)),
+    doneSig: str(raw.doneSig, 120),
     // TMDB 元数据是程序维护的缓存，不让前端直接写，避免界面把过期数据又塞回来
     tmdbMeta: normalizeTmdbMeta(raw.tmdbMeta),
     totalEpisodes: Math.max(0, num(raw.totalEpisodes)),

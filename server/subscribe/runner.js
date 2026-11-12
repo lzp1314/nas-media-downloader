@@ -6,6 +6,7 @@ import { allowedRoots, loadSettings } from '../settings.js';
 import { listSubs, getSub, patchSub, pushLog } from './store.js';
 import { scanEpisodes, missingEpisodes, parseEpisodes, pickFileIndexes } from './episodes.js';
 import { buildEpisodeIndex, findSourceForEpisode, findMovieSource, targetUpperBound } from './matcher.js';
+import { completionPlan, nextStreak, DONE_STREAK } from './completion.js';
 import { sourceA } from '../sources/a.js';
 import { sourceBJar } from '../sources/b.js';
 import { listTorrentFiles, readCachedTorrent } from '../sources/torrent.js';
@@ -105,7 +106,8 @@ const TMDB_TTL = 12 * 3600 * 1000;
 async function ensureTmdbMeta(sub, { force = false } = {}) {
   if (!sub.tmdbId || !tmdbReady()) return null;
   const cached = !force && sub.tmdbMeta;
-  if (cached && cached.at && Date.now() - cached.at < TMDB_TTL) return cached;
+  // 老版本缓存没有「每季集数」，多季剧判不了完成：碰到就立刻刷一次，别让用户等 12 小时
+  if (cached && cached.at && Date.now() - cached.at < TMDB_TTL && Array.isArray(cached.seasons)) return cached;
   const fn = sub.type === 'movie' ? movieDetail : tvDetail;
   const d = await fn(sub.tmdbId, { maxAge: force ? 0 : TMDB_TTL });
   return {
@@ -116,6 +118,7 @@ async function ensureTmdbMeta(sub, { force = false } = {}) {
     statusCn: d.statusCn,
     totalEpisodes: d.totalEpisodes,
     totalSeasons: d.totalSeasons,
+    seasons: d.seasons || [],
     firstAirDate: d.firstAirDate,
     nextAirDate: d.nextAirDate,
     nextAirEpisode: d.nextAirEpisode,
@@ -411,6 +414,8 @@ export async function runCheckTv(sub) {
         nextCheckAt: Date.now() + 30 * 60 * 1000,
         lastResult: msg,
         failCount: 0,
+        doneSig: '',
+        doneStreak: 0,
       });
       pushLog(sub, msg);
       return { ok: false, message: msg, downloaded: 0, summary: { have: have.episodes.length, to: 0 } };
@@ -418,12 +423,51 @@ export async function runCheckTv(sub) {
 
     const missing = missingEpisodes({ have: have.episodes, sent: sub.sent, from: sub.startEpisode, to });
     if (!missing.length) {
-      const msg = `齐全：本地 ${have.episodes.length} 集（${have.files} 个文件），目标 ${to} 集`;
+      // 「齐全」= 该下发的都下发了。归档另行判定：必须真的看见本地文件覆盖目标区间，
+      // 且连续两轮都成立——文件长到 30MB 就会被扫到，下载途中的半成品不能算完成。
+      const plan = completionPlan({ sub, have, tm });
+      const scopeText = plan.label || `目标到第 ${to} 集`;
+      const base = `齐全：本地 ${have.episodes.length} 集（${have.files} 个文件），${scopeText}`;
+      const sig = plan.eligible && plan.complete ? plan.sig : '';
+      const streak = nextStreak(sub, sig);
+      const dayPatch = autoDay ? { updateDays: [autoDay], updateDay: autoDay } : {};
+
+      if (sig && streak >= DONE_STREAK) {
+        // 归档时清掉区间内的历史下发失败：文件已经在磁盘上了，橙色警告不该一直挂着
+        const sent = { ...(sub.sent || {}) };
+        for (const [k, v] of Object.entries(sent)) {
+          const ep = Number(k);
+          if (Number.isInteger(ep) && ep >= plan.from && ep <= plan.to && v?.state === 'failed') delete sent[k];
+        }
+        const msg = `已完成：${plan.label}，订阅已归档`;
+        patchSub(sub.id, {
+          ...metaPatch,
+          ...dayPatch,
+          state: 'done', doneAt: Date.now(), doneSig: sig, doneStreak: streak,
+          sent,
+          lastCheckAt: Date.now(),
+          nextCheckAt: Date.now() + 30 * 86400000,
+          lastResult: msg,
+          failCount: 0,
+        });
+        pushLog(sub, msg);
+        return { ok: true, message: msg, downloaded: 0, summary: { have: have.episodes.length, to, missing: 0, done: true } };
+      }
+
+      const why = !plan.eligible ? plan.reason : (!plan.complete ? '部分文件还没落盘' : '');
+      const msg = why ? `${base}；${why}` : base;
+      // 等第二次确认时别按常规低频睡 6 小时：文件已经在磁盘上了，半小时内给结果
+      const waitConfirm = Boolean(sig) && streak < DONE_STREAK;
+      const delayMin = waitConfirm
+        ? Math.min(30, Math.max(10, Number(cfg.updateIntervalMinutes) || 30))
+        : nextDelay(after, cfg);
       patchSub(sub.id, {
         ...metaPatch,
-        ...(autoDay ? { updateDays: [autoDay], updateDay: autoDay } : {}),
+        ...dayPatch,
+        doneSig: sig,
+        doneStreak: streak,
         lastCheckAt: Date.now(),
-        nextCheckAt: Date.now() + nextDelay(after, cfg) * 60 * 1000,
+        nextCheckAt: Date.now() + delayMin * 60 * 1000,
         lastResult: msg,
         failCount: 0,
       });
@@ -511,7 +555,8 @@ export async function runCheckTv(sub) {
     }
 
     bumpDaily();
-    const msg = `本地 ${have.episodes.length} 集（${have.files} 个文件） / 目标 ${to} 集 / 缺 ${missing.length} 集 / 本次下发 ${downloaded} 集`;
+    const wasDone = sub.state === 'done';
+    const msg = `本地 ${have.episodes.length} 集（${have.files} 个文件） / 目标到第 ${to} 集 / 缺 ${missing.length} 集 / 本次下发 ${downloaded} 集`;
     // 还缺着集就保持密查：补历史缺集、一晚两集分批上线都靠这个，别一觉睡 6 小时
     const nextAt = Date.now() + nextDelay(after, cfg, Date.now(), { pending: missing.length - downloaded }) * 60 * 1000;
     patchSub(sub.id, {
@@ -522,9 +567,14 @@ export async function runCheckTv(sub) {
       nextCheckAt: nextAt,
       lastResult: msg,
       failCount: 0,
+      // 不齐全就把「连续两次」清零；已经归档的订阅若缺集（文件被删/移走），自动唤醒恢复检查
+      doneSig: '',
+      doneStreak: 0,
+      ...(wasDone ? { state: '', doneAt: 0 } : {}),
       // 不再把站点/TMDB 的集数写回 totalEpisodes：
       // 那是「用户手填」字段，写进去就等于以后永远压着站点和 TMDB，一条脏值能锁死整条订阅。
     });
+    if (wasDone) pushLog(sub, `检测到缺集，订阅已自动恢复检查：${msg}`);
     if (notes.length) pushLog(sub, notes.slice(0, 3).join('；'));
 
     return {

@@ -2093,7 +2093,7 @@ $('btnLogout').onclick = async () => {
 };
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.33';
+let currentVersion = '1.2.34';
 
 function setVersion(v) {
   if (!v) return;
@@ -2159,14 +2159,17 @@ function subCard(s) {
   // 更新日可能是数组（一周更两天），老数据只有单值 updateDay
   const ds = Array.isArray(s.updateDays) && s.updateDays.length ? s.updateDays : s.updateDay ? [Number(s.updateDay)] : [];
   const off = s.enabled === false;
+  const done = s.state === 'done'; // 自动完成归档：不再轮询，仍可恢复
   const busy = subBusy.has(s.id);
   const pending = Number(s.pending) || 0;
   const last = s.lastResult || '还没检查过';
-  const when = off
-    ? '已暂停，不再自动检查'
-    : s.nextCheckAt
-      ? `下次检查 ${fmtWhen(s.nextCheckAt)}`
-      : '排队等首次检查';
+  const when = done
+    ? `已完成归档 · 下次复查 ${s.nextCheckAt ? fmtWhen(s.nextCheckAt) : '—'}`
+    : off
+      ? '已暂停，不再自动检查'
+      : s.nextCheckAt
+        ? `下次检查 ${fmtWhen(s.nextCheckAt)}`
+        : '排队等首次检查';
   // 更新日标签只有剧集才有意义；电影只下一整部，不按周更新
   const at = String(s.updateTime || '');
   const perNight = Math.max(1, Number(s.episodesPerNight) || 1);
@@ -2207,22 +2210,24 @@ function subCard(s) {
     ? '保存目录是片库根目录，电影要存到自己的文件夹里，点「编辑」改一下'
     : '保存目录是片库根目录，集数会算成整个片库的量，点「编辑」改到这部剧自己的文件夹';
   const typeTag = `<span class="subtype-tag ${isMovie ? 'm' : 't'}">${isMovie ? '电影' : '剧集'}</span>`;
-  return `<div class="sub${off ? ' off' : ''}${isMovie ? ' movie' : ''}" data-id="${esc(s.id)}">
+  return `<div class="sub${off ? ' off' : ''}${done ? ' done' : ''}${isMovie ? ' movie' : ''}" data-id="${esc(s.id)}">
   <div class="top">
     ${typeTag}
     <div class="nm" title="${esc(s.title)}">${esc(s.title)}</div>
     ${dayTag}
-    <span class="stat ${busy ? 'downloading' : off ? 'paused' : 'done'}">${busy ? '检查中' : off ? '已暂停' : '订阅中'}</span>
+    <span class="stat ${busy ? 'downloading' : off ? 'paused' : done ? 'archived' : 'done'}">${busy ? '检查中' : off ? '已暂停' : done ? '已完成' : '订阅中'}</span>
   </div>
-  <div class="line">${esc(last)}${pending ? ` · <span class="warn">${failText}</span>` : ''}</div>
+  <div class="line">${esc(last)}${pending && !done ? ` · <span class="warn">${failText}</span>` : ''}</div>
   <div class="path" title="${esc(s.dir)}">${esc(s.dir)}</div>
   ${tmLine}
   ${s.rootBad ? `<div class="line warn">${rootTip}</div>` : ''}
   <div class="line">${esc(when)}</div>
   <div class="acts">
-    <button class="btn sm" data-act="check"${busy ? ' disabled' : ''}>${busy ? '检查中…' : '立即检查'}</button>
+    ${done
+      ? '<button class="btn sm" data-act="resume">恢复订阅</button>'
+      : `<button class="btn sm" data-act="check"${busy ? ' disabled' : ''}>${busy ? '检查中…' : '立即检查'}</button>`}
     <button class="btn sm ghost" data-act="edit">编辑</button>
-    <button class="btn sm ghost" data-act="toggle">${off ? '启用' : '暂停'}</button>
+    ${done ? '' : `<button class="btn sm ghost" data-act="toggle">${off ? '启用' : '暂停'}</button>`}
     <button class="btn sm danger" data-act="del">删除</button>
   </div>
   ${logs.length ? `<div class="recent">${logs.map((l) => `${fmtWhen(l.at)}　${esc(l.text)}`).join('<br />')}</div>` : ''}
@@ -2234,15 +2239,17 @@ function renderSubs(d = subData) {
   const stats = d?.stats || {};
   const limit = stats.dailyLimit || 36;
   const used = stats.dailyUsed || 0;
-  const tv = subItems.filter((s) => s.type !== 'movie');
-  const movies = subItems.filter((s) => s.type === 'movie');
-  $('subStat').innerHTML = `共 ${subItems.length} 个（剧集 ${tv.length} · 电影 ${movies.length}） · 今日已检查 ${used}/${limit}`;
+  // 归档的单独成组，不再混在活跃订阅里刷屏；记录不删，点「恢复订阅」即可回到上面
+  const done = subItems.filter((s) => s.state === 'done');
+  const tv = subItems.filter((s) => s.type !== 'movie' && s.state !== 'done');
+  const movies = subItems.filter((s) => s.type === 'movie' && s.state !== 'done');
+  $('subStat').innerHTML = `共 ${subItems.length} 个（剧集 ${tv.length} · 电影 ${movies.length}${done.length ? ` · 已完成 ${done.length}` : ''}） · 今日已检查 ${used}/${limit}`;
   // 始终按类型分组：不管另一类有没有，标题都在，数量变化时界面不会突然跳变
   const group = (label, cls, arr) => arr.length
     ? `<div class="subgroup ${cls}"><span class="sgdot"></span>${label}<span class="sgcount">${arr.length}</span></div>`
       + arr.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir) })).join('')
     : '';
-  $('subList').innerHTML = group('剧集订阅', 't', tv) + group('电影订阅', 'm', movies);
+  $('subList').innerHTML = group('剧集订阅', 't', tv) + group('电影订阅', 'm', movies) + group('已完成', 'd', done);
   $('subEmpty').hidden = subItems.length > 0;
   // 没配 TMDB 就提一句：不影响补集，但集数和播出日历要自己看。
   // 配了就不再唠叨——豆瓣只是备选，两个都有反而让人以为缺东西。
@@ -2651,6 +2658,16 @@ $('subList').addEventListener('click', async (e) => {
   const act = btn.dataset.act;
   if (act === 'check') return runSubCheck(id);
   if (act === 'edit') return openSubModal(sub);
+  if (act === 'resume') {
+    try {
+      await api(`/api/sub/${encodeURIComponent(id)}/resume`, { method: 'POST' });
+      toast('已恢复订阅，稍后自动检查');
+      loadSubs();
+    } catch (err) {
+      toast(err.message, true);
+    }
+    return;
+  }
   if (act === 'toggle') {
     try {
       await api(`/api/sub/${encodeURIComponent(id)}`, {

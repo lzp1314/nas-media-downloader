@@ -417,6 +417,7 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 }
 .stat.downloading { background: rgba(91, 140, 255, .14); color: #9db4ff; }
 .stat.done { background: rgba(34, 211, 166, .12); color: #7fe3c4; }
+.stat.archived { background: rgba(148, 163, 184, .14); color: #a9b7c8; }
 .stat.paused, .stat.queued { background: rgba(255, 176, 32, .12); color: #ffcb6b; }
 .stat.error { background: rgba(255, 95, 109, .12); color: #ff9098; }
 
@@ -495,6 +496,9 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .sub .subtype-tag.t { background: rgba(56, 189, 248, .16); color: #38bdf8; }
 /* 电影卡片左侧一条暖色细边，跟剧集一眼分开 */
 .subs > .sub.movie { border-left: 2px solid rgba(245, 158, 11, .55); }
+/* 已归档：略微弱化，按钮照常可点 */
+.subs > .sub.done { opacity: .82; }
+.subs > .sub.done:hover { opacity: 1; }
 /* 分组标题：两类同时存在时才出现，上方留白把两组隔开 */
 .subgroup {
   display: flex; align-items: center; gap: 8px;
@@ -504,6 +508,7 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 .subgroup .sgdot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .subgroup.m .sgdot { background: #f59e0b; }
 .subgroup.t .sgdot { background: #38bdf8; }
+.subgroup.d .sgdot { background: #64748b; }
 .subgroup .sgcount {
   font-size: 12px; font-weight: 500; color: var(--dim);
   background: var(--surface-2); border-radius: 999px; padding: 1px 7px;

@@ -2093,7 +2093,7 @@ $('btnLogout').onclick = async () => {
 };
 
 /* ---------------- 版本与检测更新 ---------------- */
-let currentVersion = '1.2.34';
+let currentVersion = '1.2.35';
 
 function setVersion(v) {
   if (!v) return;
@@ -2136,6 +2136,8 @@ let subItems = [];
 let subData = {}; // 最近一次 /api/sub 的结果：重绘时要沿用，否则「TMDB 已配」会被当成没配
 let editingSubId = '';
 const subBusy = new Set();
+// 分组折叠状态：t=剧集 / m=电影 / d=已完成。只在内存里，刷新页面自动复位为「全展开」
+const subFolded = { t: false, m: false, d: false };
 
 const fmtWhen = (ts) => {
   if (!ts) return '';
@@ -2154,7 +2156,7 @@ async function loadSubs() {
   }
 }
 
-function subCard(s) {
+function subCard(s, groupKey = '') {
   const isMovie = s.type === 'movie';
   // 更新日可能是数组（一周更两天），老数据只有单值 updateDay
   const ds = Array.isArray(s.updateDays) && s.updateDays.length ? s.updateDays : s.updateDay ? [Number(s.updateDay)] : [];
@@ -2210,7 +2212,7 @@ function subCard(s) {
     ? '保存目录是片库根目录，电影要存到自己的文件夹里，点「编辑」改一下'
     : '保存目录是片库根目录，集数会算成整个片库的量，点「编辑」改到这部剧自己的文件夹';
   const typeTag = `<span class="subtype-tag ${isMovie ? 'm' : 't'}">${isMovie ? '电影' : '剧集'}</span>`;
-  return `<div class="sub${off ? ' off' : ''}${done ? ' done' : ''}${isMovie ? ' movie' : ''}" data-id="${esc(s.id)}">
+  return `<div class="sub${off ? ' off' : ''}${done ? ' done' : ''}${isMovie ? ' movie' : ''}" data-id="${esc(s.id)}"${groupKey ? ` data-subgroup="${esc(groupKey)}"` : ''}${s.folded ? ' hidden' : ''}>
   <div class="top">
     ${typeTag}
     <div class="nm" title="${esc(s.title)}">${esc(s.title)}</div>
@@ -2245,10 +2247,14 @@ function renderSubs(d = subData) {
   const movies = subItems.filter((s) => s.type === 'movie' && s.state !== 'done');
   $('subStat').innerHTML = `共 ${subItems.length} 个（剧集 ${tv.length} · 电影 ${movies.length}${done.length ? ` · 已完成 ${done.length}` : ''}） · 今日已检查 ${used}/${limit}`;
   // 始终按类型分组：不管另一类有没有，标题都在，数量变化时界面不会突然跳变
-  const group = (label, cls, arr) => arr.length
-    ? `<div class="subgroup ${cls}"><span class="sgdot"></span>${label}<span class="sgcount">${arr.length}</span></div>`
-      + arr.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir) })).join('')
-    : '';
+  // 标题本身即按钮；点它只切本组卡片的 hidden，不重绘、不请求接口。
+  // 不把卡片包进额外容器：.subs > .sub 依赖直接子元素，包一层会掉边框和电影色条样式。
+  const group = (label, cls, arr) => {
+    if (!arr.length) return '';
+    const folded = Boolean(subFolded[cls]);
+    const head = `<button type="button" class="subgroup ${cls}" data-toggle-sub="${cls}" aria-expanded="${!folded}"><span class="sgdot"></span>${label}<span class="sgcount">${arr.length}</span><span class="sgfold">${folded ? '展开' : '收起'}<i>${folded ? '▾' : '▴'}</i></span></button>`;
+    return head + arr.map((s) => subCard({ ...s, rootBad: isLibRoot(s.dir), folded }, cls)).join('');
+  };
   $('subList').innerHTML = group('剧集订阅', 't', tv) + group('电影订阅', 'm', movies) + group('已完成', 'd', done);
   $('subEmpty').hidden = subItems.length > 0;
   // 没配 TMDB 就提一句：不影响补集，但集数和播出日历要自己看。
@@ -2650,6 +2656,20 @@ async function runSubCheck(id) {
 }
 
 $('subList').addEventListener('click', async (e) => {
+  // 分组标题：只切本组卡片与标题提示，不重绘、不请求接口
+  const foldBtn = e.target.closest('button[data-toggle-sub]');
+  if (foldBtn) {
+    const key = foldBtn.dataset.toggleSub;
+    if (!(key in subFolded)) return;
+    subFolded[key] = !subFolded[key];
+    const expanded = !subFolded[key];
+    foldBtn.setAttribute('aria-expanded', String(expanded));
+    const tip = foldBtn.querySelector('.sgfold');
+    if (tip) tip.innerHTML = `${expanded ? '收起' : '展开'}<i>${expanded ? '▴' : '▾'}</i>`;
+    $('subList').querySelectorAll(`.sub[data-subgroup="${key}"]`)
+      .forEach((card) => { card.hidden = !expanded; });
+    return;
+  }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const id = btn.closest('.sub')?.dataset.id;

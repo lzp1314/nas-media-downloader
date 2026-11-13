@@ -430,6 +430,8 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
   padding: 13px 15px; border: 1px solid var(--line);
   border-radius: 12px; background: var(--surface);
 }
+/* 显式兜住 [hidden]：作者样式若以后给 .sub 加了 display，会盖掉 UA 的 display:none */
+.subs > .sub[hidden] { display: none; }
 .sub.off { opacity: .6; }
 .sub .top { display: flex; align-items: center; gap: 10px; }
 .sub .nm {
@@ -502,9 +504,18 @@ main { position: relative; z-index: 1; padding: 0 22px 80px; max-width: 1080px; 
 /* 分组标题：两类同时存在时才出现，上方留白把两组隔开 */
 .subgroup {
   display: flex; align-items: center; gap: 8px;
-  margin: 18px 0 9px; font-size: 14px; font-weight: 600; color: var(--muted);
+  width: 100%; margin: 18px 0 9px; padding: 0; border: 0; background: none;
+  font-family: inherit; font-size: 14px; font-weight: 600; color: var(--muted);
+  text-align: left; cursor: pointer;
 }
+.subgroup:hover { color: var(--text); }
 .subgroup:first-child { margin-top: 2px; }
+.subgroup .sgfold {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; font-weight: 500; color: var(--dim);
+}
+.subgroup .sgfold i { font-style: normal; font-size: 15px; }
+.subgroup:hover .sgfold { color: var(--accent-2); }
 .subgroup .sgdot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .subgroup.m .sgdot { background: #f59e0b; }
 .subgroup.t .sgdot { background: #38bdf8; }
